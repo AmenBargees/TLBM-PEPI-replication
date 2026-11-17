@@ -1,4 +1,4 @@
-# PEPI paper replication package
+# A multiphase Thermal Lattice Boltzmann Method for modelling planetary dynamics PEPI paper replication package 
 
 One code tree (TLBM V2.6), compiled with:
   gcc -O3 -march=native -ffast-math -fPIC -shared TLBM_fast.c -o TLBM_fast.so -lm
