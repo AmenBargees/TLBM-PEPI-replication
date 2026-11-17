@@ -11,13 +11,15 @@ formation (M1) and Archean verification runs.
 
 ## 2. Build
 
-From this directory (package_1/):
+From the package_1/ directory:
+
+    cd package_1
 
     gcc -O3 -march=native -ffast-math -fPIC -shared TLBM_fast.c -o TLBM_fast.so -lm
 
 ## 3. Run
 
-Always from this directory, with an unlimited stack:
+Always from package_1/, with an unlimited stack:
 
     ulimit -s unlimited
 
@@ -49,4 +51,4 @@ For a run <proj>/<run>:
 Early sanity check: the .out should show "Run is starting", then periodic
 "Time = ..." lines with small mach values (about 0.007 at 100 My for M1).
 
-Copyright (c) 2026 Peter Mora. See ../COPYRIGHT.txt / ../LICENSE.md.
+Copyright (c) 2026 Peter Mora. See COPYRIGHT.txt / LICENSE.md (repository root).
