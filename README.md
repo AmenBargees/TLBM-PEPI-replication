@@ -1,15 +1,11 @@
-# A multiphase Thermal Lattice Boltzmann Method for modelling planetary dynamics PEPI paper replication package 
+# A multiphase Thermal Lattice Boltzmann Method for modelling planetary dynamics
 
-One code tree (TLBM V2.6), compiled with:
-  gcc -O3 -march=native -ffast-math -fPIC -shared TLBM_fast.c -o TLBM_fast.so -lm
-Run pattern (16 MPI ranks, as in the paper):
-  ulimit -s unlimited && mpirun -np 16 python3 TLBM_fast.py <project> <run>
+Replication packages for the PEPI paper (Mora, Bargees et al.).
 
-## TLBM_V26/
-- projects/RT/vk_b5L.in                           van Keken immiscible experiment
-- projects/RT/van-keken-miscible-2x.in            van Keken miscible experiment
-- projects/PEPI_melt/M1.in                        Archean continent formation example
-- projects/TEST/archean_cart_pre_stream.in        single phase archean
-- projects/TEST/archean_cart_rk_shifted_redtop.in two phase archean
-- 
+- package_1/ : TLBM V2.6 code and the five inputs replicating the paper's
+               runs (van Keken immiscible and miscible, Archean continent
+               formation M1, and the two archean verification runs).
+               See package_1/README.md for the build line and run pattern.
+- package_2/ : (planned) annulus benchmark package.
+
 Copyright (c) 2026 Peter Mora. See COPYRIGHT.txt / LICENSE.md.
