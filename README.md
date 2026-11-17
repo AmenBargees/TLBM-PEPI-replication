@@ -1,6 +1,6 @@
 # A multiphase Thermal Lattice Boltzmann Method for modelling planetary dynamics
 
-Replication packages for the PEPI paper (Mora, Bargees et al.).
+Replication packages for the PEPI paper (Bargees et al.).
 
 - package_1/ : TLBM V2.6 code and the five inputs replicating the paper's
                runs (van Keken immiscible and miscible, Archean continent
