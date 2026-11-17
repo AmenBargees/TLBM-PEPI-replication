@@ -1,0 +1,45 @@
+# License
+
+This software is distributed under Peter Mora's GTXLBM/TLBM copyright terms,
+reproduced in full below (and in COPYRIGHT.txt): free of charge for scientific
+research, education, and non-profit activity, on condition that the copyright
+notice and statement are retained in all copies and derivative works.
+Commercial use requires a separate licensing agreement with the copyright
+holder.
+
+```
+#===============================================================================
+# Software Name   : GTXLBM
+# Copyright Holder: Peter Mora
+#-------------------------------------------------------------------------------
+# Copyright ©2026 Peter Mora, All rights reserved
+#-------------------------------------------------------------------------------
+# GTXLBM is original research software developed by Peter Mora for modelling
+# geodynamical and other fluid dynamics systems using the Thermal Lattice
+# Boltzmann Method. This Software and its prototypes - TLBM_fast, RKLBM,
+# RKTLBM and GPUTLBM - are made publicly available at no cost in support
+# of scientific research, education, and non-profit activity, on the
+# condition that the Copyright Notice, this statement and the following
+# three paragraphs are included in any derivative works based on the
+# Software in whole or in part. Commercial users can obtain a separate
+# licensing agreement as set out below.
+#
+# This Statement is a unilateral grant by the Copyright Holder. No acceptance
+# is required for non-commercial use; by downloading, installing, copying,
+# modifying, or otherwise using the Software, you acknowledge and agree to the
+# terms of this Statement. If you do not agree to these terms, you may not use
+# or redistribute the Software. This Statement is a unilateral grant by the
+# Copyright Holder.
+#
+# Any use of GTXLBM for commercial purposes — including incorporation into a
+# commercial product, use in fee-bearing consulting or engineering services,
+# or use by a commercial enterprise in the conduct of its business — requires
+# a separate written licensing agreement with the Copyright Holder prior to
+# such use.
+#
+# Unlicensed commercial use constitutes copyright infringement and will result
+# in automatic termination of the non-commercial license granted by this Statement.
+# To request a commercial license, contact Peter Mora at wolop2008@gmail.com.
+#===============================================================================
+
+```
