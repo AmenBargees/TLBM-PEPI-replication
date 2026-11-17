@@ -2,6 +2,8 @@
 
 One code tree (TLBM V2.6), compiled with:
   gcc -O3 -march=native -ffast-math -fPIC -shared TLBM_fast.c -o TLBM_fast.so -lm
+New users: see QUICKSTART.md for a minimal install-and-run guide.
+
 Run pattern (16 MPI ranks, as in the paper):
   ulimit -s unlimited && mpirun -np 16 python3 TLBM_fast.py <project> <run>
 
