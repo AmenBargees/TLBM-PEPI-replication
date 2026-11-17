@@ -1,0 +1,12 @@
+__pycache__/
+*.so
+*.o
+*.pyc
+*.out
+*.bmk
+*.growth
+*.launch
+projects/*/*/data/
+projects/*/*/plots/
+projects/*/*/movies/
+*.bak*

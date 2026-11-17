@@ -1,0 +1,252 @@
+#===============================================================================
+#
+#===============================================================================
+# Run title and description on plots
+#-------------------------------------------------------------------------------
+
+run_title            = none                     # Title of the run on plots (no spaces), underscores become spaces on plots
+                                                # If run_name is unspecified, it is set to the specified run name
+description          = Van-Keken_(RT_plus_miscible_inclusion) # Description of the run on plots (printed at lower right of image or frame)
+description_color    = black   # Color of the description
+description_box      = False   # Plot the description in a white box (True or False)
+description_location = frame   # Description location (image or frame)
+
+#-------------------------------------------------------------------------------
+# Model size, timesteps and geometry
+#-------------------------------------------------------------------------------
+
+nt                   = 16_My        # Simulation time in format n[_timescale] where n is an integer
+                                    # If the optional timescale is not added, n = timesteps
+                                    # Options for timescale are: timesteps, Secs, Mins, Hours, Days, Weeks, Months, Years, Ky, My, Gy
+                                    # egs. "nt = 1000000" for 1M timesteps or "nt = 200_My" for 200 My
+R_p                  = Earth        # Radius of the planet in metres or one of: Mercury, Venus, Earth, Moon, Mars, Uranus, Neptune
+L_p                  = 5e5          # Layer thickness in metres or one of: whole_mantle, upper_mantle
+nx                   = 915          # X resolution of model
+ny                   = 1            # Y resolution of model
+nz                   = 1001         # Z resolution of model
+geometry             = cartesian    # Geometry: cartesian, annular or spherical (if ny=1, spherical = annular)
+theta1               = 0            # Start theta of an annular model (degrees)
+theta2               = 360          # End   theta of an annular model (degrees)
+n_TBL                = 2            # Number of Thermal Boundary Layer (TBL) points to use to calculate the Nusselt Number
+
+#-------------------------------------------------------------------------------
+# Physical specifications
+#-------------------------------------------------------------------------------
+
+state                = solid       # State: solid or magma
+Ra                   = unspecified # Rayleigh number (simulation)
+power_correction     = unspecified # Power correction when modelling turbulent systems at Ra < Ra_p
+Pr                   = 1e3         # Prandtl number
+Peclet               = 200         # Peclet number for the lithology (h) distribution for archean2 rheology 
+rho_p                = 3200        # Density                         (kg/m^3)
+eta_p                = 1e21        # Dynamic viscosity               (Pa.s = kg/(m.s))
+ka_p                 = 1.e-6       # Thermal diffusivity             (m^2/s)
+g_p                  = 9.8         # Gravity                         (m/s^2)
+beta_p               = 3e-5        # Thermal expansion coefficient   (1/K)
+T0_p                 = 15          # Surface temperature             (C)
+dT_p                 = 1000        # Temperature difference          (K)
+dT_p_random          = 0           # Random temperature fluctuations (K) on thermal BC to initiate convection
+initialize_ncells    = 0           # Initialize this many convection cells by sinusoidal fluctuations on thermal BC
+cell_amplitude       = 0           # Amplitude of sinusoidal temperature fluctuations if initialize_ncells > 0
+H                    = 0           # Radiogenic heat generation rate (W/kg = J/(kg.s))
+Cp                   = 1200        # Heat capacity                   (J/(kg.K) (physical units))
+T_z_file             = unspecified # Temperature profile filename for the archean (C) or unspecified
+P_z_file             = unspecified # Pressure profile filename for the archean (Pa) or unspecified
+rho_z_file           = unspecified # Density profile filename for the archean (kg/m^3) or unspecified
+L_z_file             = unspecified # Lithology energy distribution for archean2 (1 for basalt and 0 for peridotite) or unspecified
+temperature          = reynolds   # Temperature dependence of viscosity (reynolds, arrhenius or unspecified)
+gamma_T              = 0          # Power in Reynolds temperature dependence
+rheology             = archean2    # ported: van-keken-miscible -> archean2 + L_file (same kernel L paths; melt off)
+nu_formula           = Tau         # Option: "Tau", nu_plastic = (Tau_y/Tau)^N or "strain_rate", nu_plastic = nu_star + (Tau_y/(2 * strain_rate))^N
+Tau_y0_p             = 3.535534e7  # Yield stress                    (Pa = kg/(m.s^2))
+Tau_yi_p             = 707.1068    # Yield stress gradient           (Pa/m = kg/(m^2.s^2)), 1 MPa/km = 10^3 x Pa/m)
+nu_star              = 1e-4        #
+N                    = 0           # Exponent in plastic rheology equation: Tau = (Tau_y/Tau)^N
+RKTLBM               = True        # RKTLBM 
+collision            = True        # 2nd collision term on/off
+melt_time            = 1e10        # Beginning of melt extraction 
+melt_position        = surface     # Only if archean2. Where is melt added: 1) surface 2) insitu 3) False
+rho_r_file           = vkm_rho_r   # vK97 color IC npy (generated by gen_vkm_ic.py)
+rho_b_file           = vkm_rho_b   # vK97 color IC npy (generated)
+rho1_p               = 1000        # Physical density TTG (red fluid for RKTLBM)
+rho2_p               = 2000        # Physical density peridotite = (1-L) fraction of blue fluid
+rho3_p               = 2000        # Physical density basalt     =    L  fraction of blue fluid
+A                    = 0           # Surface tension parameter
+theta_u              = 0           # Upper boundary wetting angle
+theta_d              = 0           # Lower boundary wetting angle
+theta_u              = 0           # Upper boundary wetting angle
+theta_d              = 0           # Lower boundary wetting angle
+# w_diagonal (not in this version)   # was: w_diagonal           = 0.3         # Diagonal weight color gradient
+interface_thickness  = 0.85        # Interface thickness parameter 
+nu_r_factor          = 1           # Red viscosity relative to blue viscosity
+beta_g_factor        = 0           # If RKTLBM and zero no convection
+g_comp_factor        = 1           # If RKTLBM and zero no compositional gravity 
+rayleigh_taylor_option  = van-kek  # Rayleigh Taylor option: van-kek or random
+perturbation_size     = 10         # Random perturbation size for rayleigh_taylor_option = random
+depth_light           = 0.85       # Depth to light layer     for rayleigh_taylor_option = random
+
+#-------------------------------------------------------------------------------
+# Boundary conditions,  fixed, free_slip, or periodic (side boundaries only)
+#-------------------------------------------------------------------------------
+
+BC_sides             = free_slip   # Side  BC
+BC_upper             = fixed       # Upper BC
+BC_lower             = fixed       # Lower BC
+
+#-------------------------------------------------------------------------------
+# Physical timestep specifications.
+# For time_per_timestep, the format is n_timescale where n is an integer.
+# Options for timescale are Secs, Mins , Hours, Days, Weeks, Months, Years, Ky, My, Gy
+# egs. "time_per_timestep = 2_Ky" or "time_per_timestep = 100_My" etc
+#-------------------------------------------------------------------------------
+
+time_per_timestep    = 25_Years    # Physical time per timestep (preferred, takes precedence over nu_l & g_l)
+nu_l                 = unspecified # Lattice viscosity   (use nu_l to calculate g_l  & hence, dt_p, takes precedence over g_l)
+g_l                  = unspecified # Lattice gravity     (use g_l  to calculate nu_l & hence  dt_p)
+factor_dt            = 1.0         # Factor to modify dt (only applied if ky_per_timestep = unspecified)
+
+#-------------------------------------------------------------------------------
+# Mach specifications to maximize speed & control accuracy/stability
+#-------------------------------------------------------------------------------
+
+Inc_vary_dt          = 100         # Time step increment to vary dt to control mach
+start_vary_dt        = 2000        # Start time step when step dt can start to be varied
+factor_increase_dt   = 1.1         # Factor increase in dt if mach is too low
+factor_decrease_dt   = 0.9         # Factor decrease in dt if mach is too high
+factor_max_vary_dt   = 1           # Maximum factor to vary dt
+max_mach_limit       = 0.011       # Upper mach limit before dt will be decreased
+min_mach_limit       = 0.008       # Lower mach limit before dt will be increased
+nu_l_min             = 0.0005      # Minimum allowable lattice viscosity
+
+#-------------------------------------------------------------------------------
+# Accuracy specifications
+#-------------------------------------------------------------------------------
+
+float_bits           = 32          # Precision in bits of calculations
+edge_bits            = 32          # Precision in bits of edges of domains
+data_bits            = 16          # Precision in bits of data files (.npy) of plots (.png)
+shifted_distribution = False       # Increases LBM accuracy
+
+#-------------------------------------------------------------------------------
+# Output specifications
+#-------------------------------------------------------------------------------
+
+output_units         = physical    # Output units for prints & plots: physical or lattice
+output_plots         = True        # Output plot files
+output_data          = True        # Output data files
+output_timing        = True        # Output performance & timing
+
+#-------------------------------------------------------------------------------
+# Output increment specifications using the format n[_timescale] where n is an
+# integer. If the optional timescale is not added, n = timesteps
+# Options for timescale are: timesteps, Secs, Mins, Hours, Days, Weeks, Years, Ky, My or Gy
+# egs. "Inc_plots = 1000000" for 1M timesteps, "Inc_plots = 2_My" for 2 My etc
+#-------------------------------------------------------------------------------
+
+Inc_plots            = 100_Ky      # Plot      increment
+Inc_data             = 25_Ky       # Data      increment
+Inc_bmk              = 1_Ky        # Benchmark increment
+optimize_nu          = False       # Keep original lattice viscosity (no rescale), as in the paper runs
+Inc_timing           = 5000        # Timing increment
+Inc_mach             = 1000        # Mach number check/print increment
+
+#-------------------------------------------------------------------------------
+# Output plot specifications
+#-------------------------------------------------------------------------------
+
+plane                = xz          # Plane to plot (xz, xy or yz)
+coordinates          = 0           # Coordinates (ie. if plane=xz, these are the y-coordinates of the plane plotted)
+
+plot_size            = medium      # Plot size: vsmall, small, medium, large, vlarge
+plot_size_factor     = 1.0         # Plot size modifying factor to apply to plot_size
+plot_colorbar        = True        # Plot the colorbar
+colormap             = jet         # Colormap for plots: eg, jet, bwr, seismic, ...
+latex                = False       # Use latex for titles and labels in plots
+
+plot_rho             = True        # Plot the density     (kg/m^3)
+plot_T               = False       # Plot the temperature (degrees C)
+plot_u               = True        # Plot the magnitude of velocity |u|
+plot_nu_total        = False       # Plot total viscosity
+plot_nu_kinematic    = False       # Plot kinematic viscosity
+plot_nu_dynamic      = False       # Plot dynamic viscosity
+plot_vectors         = False       # Plot velocity vectors (black and white)
+plot_Tau             = False       # Plot shear stress (only for code = python)
+plot_P               = False       # Plot of the pressure
+plot_L               = True        # Plot density energy distribution
+plot_rho_eff         = False       # Plot effective density (kg/m^3)
+plot_rho_s           = False       # Plot solidus density (kg/m^3)
+plot_M_pd            = False       # Peridotite melt fraction
+plot_M_bs            = False       # TTG melt fraction
+plot_M_LP            = False       # LP-TTG melt
+plot_M_MP            = False       # MP-TTG melt
+plot_M_HP            = False       # HP-TTG melt
+plot_ce_LP           = False       # Cumulative extracted LP TTG
+plot_ce_MP           = False       # Cumulative extracted MP TTG
+plot_ce_HP           = False       # Cumulative extracted HP TTG
+plot_ce_bs           = False       # Cumulative extracted TTG
+plot_ce_pd           = False       # Cumulative extracted peridotite
+plot_T_sol_pd        = False       # T_solidus peridotite
+plot_T_sol_bs        = False       # T_solidus basalt 
+plot_T_liq_pd        = False       # T_liquidus peridotite
+plot_T_liq_bs        = False       # T_liquidus basalt
+plot_DI              = False       # Plot Differentiation Index
+plot_rho_r           = True        # Plot red density 
+plot_rho_b           = False       # Plot blue density
+plot_f_r             = False
+plot_f_b             = False
+plot_FF_mag          = False       # Plot color gradient
+plot_FF_x            = False       # Plot color gradient
+plot_FF_z            = False       # Plot color gradient
+plot_FF_y            = False       # Plot color gradient
+
+#-------------------------------------------------------------------------------
+# Output plot scale specifications
+#
+# Plots show scaled fields based on the max and min values in the field,
+# and two specifications, clip (linear scaling) and gpow (nonlinear scaling).
+#
+# clip: clips a field above clip times the maximum value in the field
+# EXAMPLE: clip = 0.5 clips at half the maximum so values less than half
+# of the maximum will have the full color range and values above half
+# the maximum show as saturated colors.
+
+# gpow: a nonlinear scaling of field f by a factor of (|f|/max(f))^gpow.
+# EXAMPLE: gpow = 0.5 boosts small values by the square root of magnitude
+# of the field allowing more detail to be seen of the smaller values
+#-------------------------------------------------------------------------------
+
+colormap             = Greys       # Colormap for plots: eg, jet, bwr, seismic, ...
+vector_overlay       = True        # Velocity vector overlay on the velocity magnitude plot
+vector_color         = k           # Velocity vector color of the vector overlay on the velocity magnitude plot
+vector_length        = 0.3         # Length of vectors relative to the default
+vector_width         = 2.0         # Width  of vectors relative to the default
+vector_interval      = 16          # Interval in lattice units to plot vectors
+annulus_interval     = 16          # Interval in annular lattice plot
+
+clip_rho             = 1.0         # clip for density
+gpow_rho             = 1.0         # gpow for density
+clip_T               = 1.0         # clip for temperature
+gpow_T               = 1.0         # gpow for temperature
+fix_scale_T          = True        # Fix the temperature scale or not (True or False)
+clip_u               = 1.0         # clip for the magnitude of velocity
+gpow_u               = 1.0         # gpow for the magnitude of velocity
+clip_nu_total        = 1.0         # clip for nu_total
+gpow_nu_total        = 1.0         # gpow for nu_total
+clip_Tau             = 1.0         # clip for Tau
+gpow_Tau             = 1.0         # gpow for Tau
+
+#-------------------------------------------------------------------------------
+# Performance specifications
+#-------------------------------------------------------------------------------
+
+code                 = c           # Do calculations using c or python
+overlap              = False       # Overlap getting of domain edges with calculations. This only
+                                   # has potential benefit for large cluster runs with code = c
+domain_decomposition = 3D          # 1D, 2D or 3D. 3D will optimize the domain decomposition (DD)
+nxi_min              = 80          # Minimum x domain scan in DD (min cache blocking size)
+nxi_max              = 401         # Maximum x domain scan in DD (max cache blocking size)
+nyi_min              = unspecified # Minimum y domain scan in DD (useful to specify for huge 3D runs as faster)
+nyi_max              = unspecified # Maximum y domain scan in DD (useful to specify for huge 3D runs as faster)
+nzi_min              = unspecified # Minimum z domain scan in DD (useful to specify for huge 3D runs as faster)
+nzi_max              = unspecified # Maximum z domain scan in DD (useful to specify for huge 3D runs as faster)
+L_file               = vkm_L       # miscible circular inclusion in L (V26 blob geometry)
