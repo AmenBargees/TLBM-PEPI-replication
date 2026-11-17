@@ -20,8 +20,8 @@
 #     Peter Mora (multiple relaxation time option - being re-implemented)
 #
 release      = "2.6"
-release_date = "2025-04-24"
-version_date = "g202101890_2026-10-30"
+release_date = "2026-11-05"
+version_date = "2026-11-05"
 #-------------------------------------------------------------------------------
 # Version 1 release notes:
 #-------------------------------------------------------------------------------
@@ -62,9 +62,11 @@ import matplotlib
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+matplotlib.use("Agg") # This is because Agg works without an x server, and avoids problems should the x server not be up
 import random
 from numpy.linalg import inv
 from numpy.random import randn, SeedSequence, default_rng
+from scipy.interpolate import CubicSpline
 from mpl_toolkits.mplot3d import axes3d, Axes3D
 import time
 import timeit
@@ -277,228 +279,387 @@ def plot_annular_lattice(n_r,radii,n_theta,theta1,theta2,annulus_interval):
     print("==================================================================",flush=True)
 
 #===============================================================================
-# Function to plot a field profile (ie. mean function of z)
+# Function to calculate, plot & save benchmark results: Nu, Vrms, Re, T_bar, Ma & TBLW
 #===============================================================================
 
+#-------------------------------------------------------------------------------
+# Function to get the shortest text representing a float so benchmark results fit on the T_z plot title
+#-------------------------------------------------------------------------------
 
-def bmk_diagnostics():
-    """V2.96-style benchmark diagnostics (Peter Mora's new conventions):
-    finite-difference Nusselt with cylindrical conductive normalization,
-    dx^2-weighted volumetric mean temperature, and volume-weighted
-    nondimensional Vrms with the per-row conformal velocity conversion
-    u_p ~ u_l * dx(z). COLLECTIVE: call on every rank; returns a dict on
-    rank 0 and None elsewhere."""
-    u2_loc = np.einsum('yzdx,yzdx->yzx', u, u)
-    T_loc  = eta/DR_2
-    sum_u2 = np.zeros(nz, dtype=np.float64)
-    sum_T  = np.zeros(nz, dtype=np.float64)
-    cnt    = np.zeros(nz, dtype=np.float64)
-    z0 = Rz*nzi
-    for zl in range(mz[Rz]):
-        zg = z0 + zl
-        sl_u = u2_loc[yedge:ny_i-yedge if yedge else ny_i, zedge+zl, xedge:nx_i-xedge if xedge else nx_i]
-        sl_T = T_loc [yedge:ny_i-yedge if yedge else ny_i, zedge+zl, xedge:nx_i-xedge if xedge else nx_i]
-        sum_u2[zg] = np.sum(sl_u, dtype=np.float64)
-        sum_T [zg] = np.sum(sl_T, dtype=np.float64)
-        cnt   [zg] = sl_u.size
-    SUM_U2 = np.zeros_like(sum_u2) ; SUM_T = np.zeros_like(sum_T) ; CNT = np.zeros_like(cnt)
-    comm.Reduce(sum_u2, SUM_U2, root=0)
-    comm.Reduce(sum_T , SUM_T , root=0)
-    comm.Reduce(cnt   , CNT   , root=0)
-    if rank != 0: return None
-    CNT   = np.maximum(CNT, 1.0)
-    Tz    = SUM_T/CNT                           # centered T profile, index 0 = surface
-    u2z   = SUM_U2/CNT
-    Tz_nd = (Tz + dT_p/2)/dT_p                  # nondimensional [0,1]
-    if geometry == "annular":
-        r_nd = radii/np.float64(L_p) ; dxp = (radii/radii[0]).astype(np.float64)
-        r2   = float(r_nd[0]) ; r1 = float(r_nd[-1])
-        q_cond = (1.0/r2)/np.log(r2/r1)
+def get_text_from_float(ftxt,f):
+
+    f_sign  = np.sign(f)  ; f_power = np.log10(np.abs(f)+1e-30) ; f_int_power = int(f_power) ; f_rem_power = f_power-f_int_power ; f_factor = 10**f_rem_power
+    if f_factor < 1:
+        f_factor   *= 10 ; f_power   -= 1
+    f_factor *= f_sign
+
+    if   f < 0.001 : f_text = ftxt + r'$%3.1f \times 10^{%d}$' %(f_factor,f_int_power)
+    elif f < 0.01  : f_text = ftxt + r'$%7.5f$' %(f)
+    elif f < 0.1   : f_text = ftxt + r'$%6.4f$' %(f)
+    elif f < 1     : f_text = ftxt + r'$%5.3f$' %(f)
+    elif f < 10    : f_text = ftxt + r'$%4.2f$' %(f)
+    elif f < 100   : f_text = ftxt + r'$%4.1f$' %(f)
+    elif f < 1000  : f_text = ftxt + r'$%5.1f$' %(f)
+    elif f < 100000: f_text = ftxt + r'$%d   $' %(f+0.5)
+    else           : f_text = ftxt + r'$%3.1f \times 10^{%d}$,' %(f_factor,f_int_power)
+
+    return f_text
+
+def plot_and_write_bmk(T_n,T_latex,print_filename=False):
+
+    global write_plots, D, f, c, dx, dx_l, zedge, mzi
+
+#   Get the normalized temperature to core 0
+
+    T_n = get_field(T_n)
+
+#   Get Vrms and maximum magnitude of velocity
+
+#    U_x0             = get_field(u[:,:,X,:])
+#   if D == 3: U_y0  = get_field(u[:,:,Y,:])
+#   U_z0             = get_field(u[:,:,Z,:])
+    u_l      = u[:,:,:,:]  # Lattice velocity
+    dx_l = np.ones((ny_i,nz_i,nx_i))
+    u2_l     = np.einsum('yzdx,yzdx->yzx',u_l,u_l) # Lattice velocity squared
+    u_l_max  = get_max_field(np.sqrt(u2_l))        # Maximum magnitude lattice velocity
+
+    if rank < nr:
+        dvol   = dx_l**2                          # Weights = volume
+        v2     = u2_l
     else:
-        dxp  = np.ones(nz) ; q_cond = 1.0 ; r2 = 1.0
-        r_nd = 1.0 - np.arange(nz)/(nz - 1.0)   # pseudo radius: plain gradient
-    w  = dxp**2 ; wt = w.copy() ; wt[0] *= 0.5 ; wt[-1] *= 0.5
-    T_bar    = float((Tz_nd*wt).sum()/wt.sum())
-    T_mean_C = float((Tz*wt).sum()/wt.sum()) + T0_p + dT_p/2
-    dTdr = (Tz_nd[1:] - Tz_nd[:-1])/(r_nd[1:] - r_nd[:-1])
-    r_fd = 0.5*(r_nd[1:] + r_nd[:-1])
-    q_fd = -(1.0/q_cond)*(r_fd/r2)*dTdr
-    iu = 0
-    for i in range(nz//2):
-        if q_fd[i+1] < q_fd[i]:
-            iu = i ; break
-    idn = nz - 3
-    for idn in range(nz-3, nz//2, -1):
-        if q_fd[idn] < q_fd[idn+1]: break
-    idn += 1
-    Nu_u = float(q_fd[iu]) ; Nu_d = float(q_fd[idn]) ; Nu = 0.5*(Nu_u + Nu_d)
-    v2w      = u2z*dxp**2                       # conformal conversion (u_p ~ u_l dx)
-    Vrms_lat = math.sqrt(max(float((v2w*wt).sum()/wt.sum()), 0.0))
-    Vrms_nd  = Vrms_lat*(L_l/ka_l)/dt           # /dt: vary-dt rescaling of lattice u
-    v_rms_cm = Vrms_lat*dx_p/(dt*dt_p)*u_cm_py
-    return {"Vrms_nd": Vrms_nd, "v_rms_cm": v_rms_cm, "Nu": Nu, "Nu_u": Nu_u,
-            "Nu_d": Nu_d, "T_bar": T_bar, "T_mean_C": T_mean_C}
+        dvol   = np.zeros(1,dtype=np_float)
+        v2     = np.zeros(0,dtype=np_float)
 
+    Vrms   = np.sqrt(get_sum_field(dvol*v2)/(get_sum_field(dvol)+1e-30))
+    Vrms  *= (L_l/ka_l)
+    v2_max = get_max_field(v2)
+    v2_max = v2_max*np.ones(1,dtype=np_float)
+    comm.Bcast(v2_max,root=0) ; v2_max = v2_max[0]
+    v2    /= max(1e-10,v2_max) # Normalize
 
-def plot_field_profile(field,what,what_latex,c0=0,c1=1):
+    v2    = get_field(v2)    # Get normalized squared velocity
 
-#   Get the field, and then field profile on core 0
-
-    FIELD = np_float(get_field(field))
-
-    _bd = bmk_diagnostics() if what == "T" else None
+#   Calculate the benchmark data on core 0 and plot and save it
 
     if rank == 0:
-        FIELD = c0 + c1 * FIELD
-        FIELD_z = np.zeros(nz,dtype=np_float)
-        for z in range(nz):
-            FIELD_z[z] = np.sum(FIELD[:,z,:])/(nx*ny)
- 
-#       Calculate the thermal boundary layer width and print it and Nu
+        dx = np.ones(nz)
 
-        nz_profile = nz
-        zu_TBL = np.zeros
-        if geometry == "annular":
-            z    = np.zeros(nz,dtype=np_float)
-            for i in range(nz):
-                z[:] = R_p - radii[:]
-        else:
-            z  = dx_p*np.linspace(0,nz-1,nz,dtype=np_float)
-        if (write_data or write_plots) and what == "T":
-            i0     = 1 # Start point to calculate TBL width (use 1 as the boundary point is not part of the linear region)
-            if geometry == "annular":
-                nu_TBL = n_TBL
-                nd_TBL = n_TBL
+#       Get the text for physical time and timsteps for files
+
+        time_text_title = timesteps_to_time_text(it,dt_p,output_units)
+        time_text_file  = timetext(it,timescale_Inc_data,dt_p)
+
+#       Maximum Mach number
+
+#       Calculate Mach Number and Reynolds Number from Ma. Use u_l_max to calculate Ma per Figure C2
+#       of Mora et al. 2026 because: (1) Vrms is saved anyway and can be converted to Re_rms,
+#       and (2) Re max scatter reveals variability due to turbulence, so save Re_max = u_l_max/C_s
+
+        Ma            = u_l_max/C_s
+        Re            = u_l_max*L_l/nu_l
+
+#       Get the mean temperature and velocity profiles Tz & Vz, and calculate the volumetric mean temperature T_bar
+
+        Tz = np.zeros(nz) ; Vz = np.zeros(nz)
+        for iz in range(nz):
+            Tz[iz] = np.sum(T_n[:,iz,:])
+            Vz[iz] = np.sum(v2 [:,iz,:])
+        Tz /= (nx*ny)
+        Vz  = v2_max*L_l/ka_l*np.sqrt(Vz)/(nx*ny)
+
+#       Initialize integral via the trapezoid rule and calculate T_bar = int Tz(z) dz
+
+        T_bar  = 0.5*(Tz[0]*dx[0]**D + Tz[nz-1]*dx[nz-1]**D)
+        for iz in range(1,nz-1): T_bar += (Tz[iz]*dx[iz]**D)
+
+        w_bar  = 0.5*(dx[0]**D + dx[nz-1]**D)
+        for iz in range(1,nz-1): w_bar += dx[iz]**D
+
+        T_bar /= w_bar
+
+#       Write temperature profile range and save the data
+
+        if write_plots or write_data:
+            Tz_min     = np.min(Tz) ; Tz_max     = np.max(Tz)
+            Vz_min     = np.min(Vz) ; Vz_max     = max(1e-10,np.max(Vz))
+            if dT_p > 1000:
+                Tz_min     = int(Tz_min     + 273.5) - 273
+                Tz_max     = int(Tz_max     + 273.5) - 273
+                print("        Plotting  (png) T_z E [%5d,%5d]"     %(Tz_min,Tz_max),flush=True)
+                print("        Saving    (npy) T_z E [%5d,%5d]"     %(Tz_min,Tz_max),flush=True)
             else:
-                nu_TBL = n_TBL
-                nd_TBL = n_TBL
-            zu_TBL      = np.zeros(nz,dtype=np_float)
-            zu_TBL[:nz] = z      [:nz]
-            Tu_z        = FIELD_z[:nz]
-            zd_TBL      = np.zeros(nz,dtype=np_float)
-            Td_z        = np.zeros(nz,dtype=np_float)
-            for i in range(nz):
-                zd_TBL[i] = L_p - z[nz-i-1]
-                Td_z  [i] = FIELD_z[nz-i-1]
+                print("        Plotting  (png) T_z E [%8.3g,%8.3g]" %(Tz_min,Tz_max),flush=True)
+                print("        Saving    (npy) T_z E [%8.3g,%8.3g]" %(Tz_min,Tz_max),flush=True)
+            print("        Plotting  (png) V_z E [%8.3g,%8.3g]" %(Vz_min,Vz_max),flush=True)
+            print("        Saving    (npy) V_z E [%8.3g,%8.3g]" %(Vz_min,Vz_max),flush=True)
+        if write_data:
+            filename = data_dir + "T_z_%s.npy" %(time_text_file) ; np.save(filename,Tz)
+            filename = data_dir + "V_z_%s.npy" %(time_text_file) ; np.save(filename,Vz)
 
-            c1_Tu,c0_Tu = np.polyfit(zu_TBL[i0:nu_TBL+i0], Tu_z[i0:nu_TBL+i0], 1)
-            c1_Td,c0_Td = np.polyfit(zd_TBL[i0:nd_TBL+i0], Td_z[i0:nd_TBL+i0], 1)
+#       Calculate normalized distance from the surface and the constants needed
+#       to calculate the non-dimensional heat flux in cylindrical coordinates
 
-            w1_TBL = (T0_p+dT_p/2-c0_Tu)/c1_Tu if c1_Tu != 0 else np.inf
-            w2_TBL = (T0_p+dT_p/2-c0_Td)/c1_Td if c1_Td != 0 else np.inf
-            w_TBL  = (w1_TBL+w2_TBL)/2
-            for i in range(nz):
-                if zu_TBL[i] > w1_TBL: break
-            nzu_profile = i+1
-            for i in range(nz):
-                if zd_TBL[i] > w2_TBL: break
-            nzd_profile = i+1
+        r        = radii/L_p
+        L        = 1
+        r1       = r[nz-1]
+        r2       = r[0   ]
+        ff       = r1/r2
+        z        = r2-r
+        iz       = np.linspace(0,1,nz)
+        cs_z     = CubicSpline(iz,z)
+        z_flip   = np.flip(z)
+        Tz_flip  = np.flip(Tz)
+        q_cond   = (L/r2)/np.log(r2/r1)
 
-            FIELDu_z = FIELD_z[:nz]
-            FIELDd_z = np.zeros(nz,dtype=np_float)
-            for i in range(nz): FIELDd_z[i] = FIELD_z[nz-i-1]
-            Tu_pred  = c0_Tu + c1_Tu * zu_TBL
-            Td_pred  = c0_Td + c1_Td * zd_TBL
+#       Calculate dT/dr by finite differences as a weighted average of forward and backward differences
+#       in the interior, and by forward or backward differences at the edges
 
-#           Nu by Peter's   method of fitting and averaging upper and lower TBL widths
+        dT_fd   = np.zeros(nz-1)
+        dr      = np.zeros(nz-1)
+        for iz in range(nz-1):
+            dT_fd[iz] = Tz[iz+1] - Tz[iz]
+            dr   [iz] = r [iz+1] - r [iz]
 
-            Nu_pm = L_p/w_TBL
+        r_fd      = (r[:nz-1]+r[1:])/2
+        dTdr_fd   = dT_fd/dr
 
-#           Nu by Gabriele's method of dinite difference one up from the lower surface
+        z_fd      = (z[:nz-1]+z[1:])/2 ; z_fd_flip = 1 - np.flip(z_fd)
 
-            dT_dz = FIELD[:,1:nz,:] - FIELD[:,0:nz-1,:]
-            Nu_gm = (1/dT_p)*np.sum(dT_dz[0,nz-3,:])    # Original as per paper but allowing for nz != nx
-#            dT_dz = FIELD_z[1:nz]-FIELD_z[0:nz-1]
-#            dT_dz = dT_dz[nz-3]
-#            Nu_gm = (1/dT_p)*dT_dz*(nz-1)
+#       Calculate the non-dimensional heat flux and find the maxia adjacent the upper and base surfaces
 
-            Nu    = Nu_pm
+        q_fd    = - (1/q_cond) * (r_fd/r2) * dTdr_fd ; q_fd_flip = np.flip(q_fd)
 
-#           V_rms physical and renormalized time
+        for iu in range(nz//2):
+            if q_fd[iu+1] < q_fd[iu]: break
 
-            v_rms_p       = v_rms_l*dx_p/dt_p
-            v_rms_cm_py   = v_rms_p*u_cm_py
-            Re_l          = u_mag_max*L_l/nu_l
-            Re_rms_l      = v_rms_l*L_l/nu_l
-            Re_p          = u_mag_max*L_p/(ka_p*Pr)
-            Re_rms_p      = v_rms_p*L_p/(ka_p*Pr)
-            u_l           = u_mag_max
-            if _bd:
-                print("BMK t = %s  Vrms_nd=%9.4g  v_rms=%8.3f cm/yr  Nu=%7.3f (u %6.3f, d %6.3f)  T_bar=%7.4f  T_mean=%7.1f C" % (
-                    timesteps_to_physical_time_text(t,dt_p,output_units), _bd["Vrms_nd"], _bd["v_rms_cm"], _bd["Nu"], _bd["Nu_u"], _bd["Nu_d"], _bd["T_bar"], _bd["T_mean_C"]), flush=True)
+        for id in range(nz-3,nz//2,-1):
+            if q_fd[id] < q_fd[id+1]: break
 
-            if output_units == "physical":
-                time_text = timesteps_to_physical_time_text(t,dt_p,output_units)
-                print("Time = %d (%d computed) = %s, " %(it_mach,t_computed,time_text),end="",flush=True)
-            else:
-                print("Time = %d (%d computed), " %(it_mach,t_computed),end="",flush=True)
+        id += 1
 
-#           Write benchmark file with: log(Ra) L_p wu_TBL wd_TBL V_rms
+        qu_fd   = q_fd[iu] ; qd_fd  = q_fd[id]
+        Tu      = Tz[iu]   ; Td     = Tz[id]
 
-            f_bmk = open(bmk_file,"a")       # Open  benchmark file
-            f_bmk.writelines("%d %11.4f %5.3f %9.4g %8.5f %8.4f %8.4f %8.4f %10.5g %10.4g %8.4g\n" % (
-                it, it*dt_p/sec_my, math.log(Ra_l,10.0), dt, _bd["T_bar"], _bd["Nu"], _bd["Nu_u"], _bd["Nu_d"],
-                _bd["Vrms_nd"], _bd["v_rms_cm"], mach_max))
-            f_bmk.close()                    # Close benchmark file
+#       Calculate Nu's & TBL widths at q maxima adjacent upper & base surfaces and the means by finite differences
+
+        Nu_u_fd =  qu_fd
+        Nu_d_fd =  qd_fd
+        Nu_fd   = (Nu_u_fd+Nu_d_fd)/2
+
+        lu_fd   = -(1/dTdr_fd[iu])/2 ; TBLW_u_fd = lu_fd/dx[iu]*L_l
+        ld_fd   = -(1/dTdr_fd[id])/2 ; TBLW_d_fd = ld_fd/dx[id]*L_l
+        l_fd    = (lu_fd  +  ld_fd )/2 ; TBLW_fd   = (TBLW_u_fd+TBLW_d_fd)/2
+
+#       Set Nu and TBLW to fd value for printing to out file
+
+        Nu      = Nu_fd
+        TBLW    = TBLW_fd
 
         if write_plots:
 
-            if not latex:
-                title      = what
-            else:
-                title      = what_latex
+#-------------------------------------------------------------------------------
+#           Plot temperature versus depth, its tangent lines at the heat flux
+#           maxima, and the temperature mid value and volumetric mean
+#-------------------------------------------------------------------------------
 
-#           Set and plot the title
+#           Set the figure size and labels
 
-            if run_title == "unspecified": this_title = PROJECT + "/" + RUN
-            else:                          this_title = run_title
+            fig = plt.figure(figsize=(9,4.5)) ; fig = plt.subplots_adjust(left=0.07,bottom=0.11,top=0.93,right=0.96)
 
-            this_title = str2str(this_title)
+#           Set upper and base temperature tangent line start and end points
 
-            if t < 0:
-                title = this_title + ": " + title
-            elif output_units == "physical":
-                time_title = timesteps_to_physical_time_text(t,dt_p,output_units)
-                title = this_title + ": " + title + "_z(%s)" %(time_title)
-            else:
-                title = this_title + ": " + title + "_z(%d)" %(it_plots)
+            ztu_cut = z[iu]-(0.5-Tz[iu])/dTdr_fd[iu] ; ztd_cut = z[id] - (0.5-Tz[id])/dTdr_fd[id]
 
-            if what == "T":
-                title = title + ", Nu=%4.2f" %(Nu)
+            ztu     = np.array([z [iu],ztu_cut],dtype=float) ; ztd = np.array([z [id],ztd_cut],dtype=float)
+            Ttu     = np.array([Tz[iu],0.5    ],dtype=float) ; Ttd = np.array([Tz[id],0.5    ],dtype=float)
 
-#           Set the filename and save the figure
+#           Title with time, Ra, Pr, A and benchmark results
 
-            what_file = what + "_z"
+            if output_units == "physical": title = r'$T$(%s): ' %(time_text_title)
+            else                         : title = r'$T$(%d): '  %(it)
 
-            if t < 0: full_filename = plot_dir + what_file + ".png"
-            else:     full_filename = plot_dir + what_file + "_%s.png" %(timetext(it_plots,timescale_Inc_plots,dt_p))
+            Ra = Ra_p
+            Ra_power = np.log10(Ra) ; Ra_int_power = int(Ra_power) ; Ra_rem_power = Ra_power-Ra_int_power ; Ra_factor    = 10**Ra_rem_power
+            Pr_power = np.log10(Pr) ; Pr_int_power = int(Pr_power) ; Pr_rem_power = Pr_power-Pr_int_power ; Pr_factor    = 10**Pr_rem_power
 
-            print("Plotting profile for %s E [%8.3g,%8.3g] to %s" %(what,np.min(FIELD_z),np.max(FIELD_z),full_filename),flush=True)
+            if abs(Ra_factor - 1) < 0.05: title = title + r'$Ra = 10^{%d}$,' %(Ra_int_power)
+            else                        : title = title + r'$Ra = %3.1f \times 10^{%d},$' %(Ra_factor,Ra_int_power)
 
-            fig = plt.figure(figsize=(4.7,3.6))
-            fig = plt.subplots_adjust(left=0.15,bottom=0.12,top=0.935,right=0.98)
-            plt.title(title,fontsize=9)
-            labelu = what + "_upper"
-            labeld = what + "_lower"
-            plt.plot(zu_TBL,FIELDu_z,"-o",color="blue",label=labelu,markersize=1,linewidth=0.75)
-            plt.plot(zd_TBL,FIELDd_z,"-o",color="red" ,label=labeld,markersize=1,linewidth=0.75)
-            if what == "T":
-                nz_plot = min(nz_profile, int(w_TBL + 2) if np.isfinite(w_TBL) else nz_profile)
-                plt.plot(zu_TBL[i0:nzu_profile],Tu_pred[i0:nzu_profile],"--",color="blue",label="Fit upper",linewidth=0.6)
-                plt.plot(zd_TBL[i0:nzd_profile],Td_pred[i0:nzd_profile],"--",color="red" ,label="Fit lower",linewidth=0.6)
-                plt.axhline(T0_p+dT_p/2,linestyle="-",linewidth=0.5,color="black")
-                plt.xlim(0,L_p/2)
-                plt.ylim(0,T0_p+dT_p*1.2)
-            plt.legend(loc="upper right",fontsize=9)
-            plt.xlabel("|z-z_boundary|",fontsize=9)
-            plt.ylabel(what,fontsize=9)
-            plt.tick_params(axis='x',labelsize=8)
-            plt.tick_params(axis='y',labelsize=8)
+            if abs(Pr_factor - 1) < 0.05: title = title + r'$Pr = 10^{%d},$' %(Pr_int_power)
+            else                        : title = title + r'$Pr = %3.1f \times 10^{%d},$' %(Pr_factor,Pr_int_power)
+            title = title + r'$A=%5.2f,$' %(A)
 
+            title = title + get_text_from_float(r'$Nu=$',Nu) + "," + get_text_from_float(r'$V_{rms}=$',Vrms) + "," + get_text_from_float(r'$Re=$',Re) + "," + get_text_from_float(r'$Ma=$',Ma)
+
+            plt.title(title,fontsize=12)
+
+            plt.plot   (z[:nz//2+1],Tz[:nz//2+1],"-" ,color="blue"                                                  ,linewidth=1.5)
+            plt.plot   (ztu,Ttu                 ,"--",color="blue",label="Upper tangent"                            ,linewidth=1.5)
+            plt.plot   (z[nz//2:  ],Tz[nz//2:]  ,"-" ,color="red"                                                   ,linewidth=1.5)
+            plt.plot   (ztd,Ttd                 ,"--",color="red" ,label="Lower tangent"                            ,linewidth=1.5)
+            plt.axhline(0.5           ,linestyle="-" ,color="black",label=r'$T_{mid}=0.5$'                          ,linewidth=0.75)
+            plt.axhline(T_bar         ,linestyle="--",color="black",label=r'$\overline{T} \ \ \ \ = %5.3f$' %(T_bar),linewidth=0.75)
+
+            plt.legend(loc="upper center",fontsize=12)
+
+#           Axis labels and plot limits
+
+            plt.xlim(0,1)
+            plt.ylim(0,1)
+            plt.xlabel("Depth",fontsize=12)
+            plt.ylabel("Temperature",fontsize=12)
+            plt.tick_params(axis='x',labelsize=10)
+            plt.tick_params(axis='y',labelsize=10)
+
+#           Filename and save T_z plot
+
+            full_filename = plot_dir + "T_z_%s.png" %(time_text_file)
             try: os.remove(full_filename)
             except OSError: pass
             plt.savefig(full_filename)
             plt.close()
+
+#-------------------------------------------------------------------------------
+#           Plot velocity versus depth
+#-------------------------------------------------------------------------------
+
+#           Set the figure size and labels
+
+            fig = plt.figure(figsize=(9,4.5)) ; fig = plt.subplots_adjust(left=0.09,bottom=0.11,top=0.93,right=0.96)
+
+#           Title with time, Ra, Pr, A and benchmark results
+
+            if output_units == "physical": title = r'$V_{rms}$(%s): ' %(time_text_title)
+            else                         : title = r'$V_{rms}$(%d): '  %(it)
+
+            Ra = Ra_p
+            Ra_power = np.log10(Ra) ; Ra_int_power = int(Ra_power) ; Ra_rem_power = Ra_power-Ra_int_power ; Ra_factor    = 10**Ra_rem_power
+            Pr_power = np.log10(Pr) ; Pr_int_power = int(Pr_power) ; Pr_rem_power = Pr_power-Pr_int_power ; Pr_factor    = 10**Pr_rem_power
+
+            if abs(Ra_factor - 1) < 0.05: title = title + r'$Ra = 10^{%d}$,' %(Ra_int_power)
+            else                        : title = title + r'$Ra = %3.1f \times 10^{%d},$' %(Ra_factor,Ra_int_power)
+
+            if abs(Pr_factor - 1) < 0.05: title = title + r'$Pr = 10^{%d},$' %(Pr_int_power)
+            else                        : title = title + r'$Pr = %3.1f \times 10^{%d},$' %(Pr_factor,Pr_int_power)
+            title = title + r'$A=%5.2f,$' %(A)
+
+            title = title + get_text_from_float(r'$Nu=$',Nu) + "," + get_text_from_float(r'$V_{rms}=$',Vrms) + "," + get_text_from_float(r'$Re=$',Re) + "," + get_text_from_float(r'$Ma=$',Ma)
+
+            plt.title(title,fontsize=12)
+
+            plt.plot   (z,Vz,"-" ,color="blue"                                                  ,linewidth=1.5)
+
+#           Axis labels and plot limits
+
+            plt.xlim(0,1)
+            plt.ylim(0,1.02*Vz_max)
+            plt.xlabel("Depth",fontsize=12)
+            plt.ylabel(r'$V_{rms}$',fontsize=12)
+            plt.tick_params(axis='x',labelsize=10)
+            plt.tick_params(axis='y',labelsize=10)
+
+#           Filename and save V_z plot
+
+            full_filename = plot_dir + "V_z_%s.png" %(time_text_file)
+            try: os.remove(full_filename)
+            except OSError: pass
+            plt.savefig(full_filename)
+            plt.close()
+
+#-------------------------------------------------------------------------------
+#           Temperature difference of the TBL relative to T(q_max) versus distance from the boundary and its cubic spline
+#-------------------------------------------------------------------------------
+
+            fig = plt.figure(figsize=(7,4.5)) ; fig = plt.subplots_adjust(left=0.12,bottom=0.12,top=0.93,right=0.96)
+            title = r'$T$(%s)' %(time_text_title) ; plt.title(title,fontsize=14)
+
+#           Limit plot to the min distance of nmax points and frac x TBL width
+
+            frac   = 2 ; nmax = 8
+            numax  = int(TBLW_u_fd+2.5) ; ndmax = int(TBLW_d_fd+2.5)
+            dumax  = dx[0]*(numax-1)/L_l ; ddmax = dx[nz-1]*(ndmax-1)/L_l; dmax = max(dumax,ddmax)
+            
+            xmin   = 0 ; xmax = frac*max(lu_fd,ld_fd) ; xmax = min(xmax,dmax)
+            ymin   = 0 ; ymax = 1
+            yspace = 0.0 ; yrange = ymax - ymin ; ymin -= yspace*yrange ; ymax += yspace*yrange
+
+            plt.xlim(xmin,xmax) ; plt.ylim(ymin,ymax)
+
+            plt.xlabel(r'Distance from boundary (blue: upper, red: base)',fontsize=12)
+            plt.ylabel(r'$T$',fontsize=12)
+
+            plt.plot(z       ,Tz     ,"o-",label=r'$T_u$',color="blue",linewidth=2,markersize=5,markerfacecolor='blue')
+            plt.plot(1-z_flip,Tz_flip,"o-",label=r'$T_b$',color="red" ,linewidth=2,markersize=5,markerfacecolor='red' )
+
+            plt.legend(loc="upper left",fontsize=12)
+
+            full_filename = plot_dir + "TBL_T_%s.png" %(time_text_file)
+            plt.savefig(full_filename)
+            plt.close()
+
+#-------------------------------------------------------------------------------
+#           Nu of the TBL versus distance from the boundary and its cubic spline
+#-------------------------------------------------------------------------------
+
+            fig = plt.figure(figsize=(7,4.5)) ; fig = plt.subplots_adjust(left=0.12,bottom=0.12,top=0.93,right=0.96)
+
+            title = r'$Nu$(%s) = %5.3g' %(time_text_title,Nu) ; plt.title(title,fontsize=14)
+
+            plt.xlabel(r'Distance from boundary (blue: upper, red: base)',fontsize=12)
+            plt.ylabel(r'$Nu$',fontsize=12)
+
+            ymin = np.min(q_fd) ; ymax = np.max(q_fd)
+            yspace = 0.05 ; yrange = ymax - ymin ; ymin -= yspace*yrange ; ymax += yspace*yrange
+            plt.xlim(xmin,xmax) ; plt.ylim(ymin,ymax)
+
+            plt.plot(z_fd     ,q_fd     ,"-o",label=r'$Nu_u$',color="blue",linewidth=2,markersize=5,markerfacecolor='blue')
+            plt.plot(z_fd_flip,q_fd_flip,"-o",label=r'$Nu_d$',color="red" ,linewidth=2,markersize=5,markerfacecolor='red')
+
+            plt.legend(loc="upper right",fontsize=12)
+
+            full_filename = plot_dir + "TBL_Nu_%s.png" %(time_text_file)
+            plt.savefig(full_filename)
+            plt.close()
+
+#-------------------------------------------------------------------------------
+#           Print benchmark summary
+#-------------------------------------------------------------------------------
+
+            print("        ======================================",flush=True)
+            print("        BENCHMARK SUMMARY: %s" %(time_text_title),flush=True)
+            print("        ======================================",flush=True)
+            print("        iu        = %5d   = index upper q max" %(iu),flush=True)
+            print("        id        = %5d   = index base  q max" %(id),flush=True)
+            print("        --------------------------------------",flush=True)
+            print("        f = r1/r2 = %9.4g" %(dx[nz-1]/dx[0 ]),flush=True)
+            print("        q_cond    = %9.4g = (L/r2)/(ln(r2/r1))" %(q_cond),flush=True)
+            print("        --------------------------------------",flush=True)
+            print("        lu        = %9.4g = %9.4g lattice cells" %(lu_fd    ,TBLW_u_fd    ),flush=True)
+            print("        lb        = %9.4g = %9.4g lattice cells" %(ld_fd    ,TBLW_d_fd    ),flush=True)
+            print("        --------------------------------------",flush=True)
+            print("        Nu_u      = %9.4g" %(Nu_u_fd)     ,flush=True)
+            print("        Nu_b      = %9.4g" %(Nu_d_fd)     ,flush=True)
+            print("        ======================================",flush=True)
+            print("        Nu        = %9.4g" %(Nu_fd)       ,flush=True)
+            print("        Vrms      = %9.4g" %(Vrms)        ,flush=True)
+            print("        T_bar     = %9.4g" %(T_bar)       ,flush=True)
+            print("        --------------------------------------",flush=True)
+            print("        Re        = %9.4g" %(Re)          ,flush=True)
+            print("        Ma        = %9.4g" %(Ma)          ,flush=True)
+            print("        l         = %9.4g = %9.4g lattice cells" %(l_fd,TBLW_fd),flush=True)
+            print("        ======================================",flush=True)
+
+#-------------------------------------------------------------------------------
+#       Append benchmark results to benchmark file
+#-------------------------------------------------------------------------------
+
+            print("        Appending (bmk) Nu = %8.4g, Vrms = %8.4g Re = %8.4g, Ma = %8.3g" %(Nu,Vrms,Re,Ma),flush=True)
+            print("        ======================================",flush=True)
+
+        f_bmk = open(bmk_file,"a")
+        f_bmk.writelines("%6d %s %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g %9.4g\n" %(t_bmk,timescale_Inc_bmk,math.log(Ra_l,10),math.log(Pr_l,10),A,Ma,T_bar,Nu_fd,Vrms,Re,TBLW_fd,TBLW_u_fd,TBLW_d_fd,Nu_u_fd,Nu_d_fd))
+        f_bmk.close()
+
 
 #===============================================================================
 # Function to write a data file and plot a field
@@ -508,8 +669,6 @@ def write_and_plot_field(field,what,what_latex,cbar,cbar_latex,save=True,plot=Tr
     clip=1,gpow=1,zero_mean=False,plot_image=True,plot_vectors=False,vmin=0,vmax=0,c0=0,c1=1):
 
     global coordinate
-
-    if save and not globals().get("_save_fields_now", True): save = False
 
     if (write_data and save) or (write_plots and plot):
 
@@ -569,7 +728,7 @@ def write_and_plot_field(field,what,what_latex,cbar,cbar_latex,save=True,plot=Tr
 
 def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_image=True,plot_vectors=False,vmin=0,vmax=0):
 
-    global vector_color, full_filename, coordinate
+    global vector_color, full_filename, coordinate, description
 
     field     = np.float64(field)
     field_min = np.min(field)
@@ -733,6 +892,9 @@ def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_ima
 
 #   Allow extra space if the description is in the frame
 
+    if rank == 0:
+        print("description      = ",description,flush=True)
+        print("len(description) = ",len(description),flush=True)
     if len(description) > 0 and description_location == "frame":
         if   geometry == "cartesian":
             if aspect <= 4.0:
@@ -772,6 +934,16 @@ def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_ima
             x_max  = dx_p*(nx-1)/1.e6
             z_min  = dx_p*(ny-1)/1.e6
             factor = dx_p/1.e6
+
+        if rayleigh_taylor_option == "van-kek":
+            x_min = 0
+            x_max = (nx-1)/(nz-1)
+            z_max = 0
+            z_min = 1
+            field = 1000 + 10*(field-1000)/1000
+            vmin  = 1000
+            vmax  = 1010
+            description = r'van Keken Rayleigh-Taylor experiment $(\mu_1 = \mu_2 = 100\ {\rm  Pa}\cdot{\rm s})$'
 
 #       Plot the image if required
 
@@ -839,6 +1011,11 @@ def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_ima
         title = this_title + ": " + title + "(%s)" %(time_title)
     else:
         title = this_title + ": " + title + "(%d)" %(it_plots)
+
+    if rayleigh_taylor_option == "van-kek" and what == "rho":
+        title = r'$\rho(%s)$' %(time_title)
+    if rayleigh_taylor_option == "van-kek" and what == "L":
+        title = r'$C(%s)$' %(time_title)
 
     if D == 3:
         title = title + ", plane=" + plane
@@ -924,6 +1101,9 @@ def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_ima
                 else:
                     plt.xlabel(r'$\displaystyle x$ (km \times 1000)',fontsize=fontsize_axis_labels)
                     plt.ylabel(r'$\displaystyle z$ (km \times 1000)',fontsize=fontsize_axis_labels)
+                if rayleigh_taylor_option == "van-kek":
+                    plt.xlabel(r'$x$ (m)',fontsize=fontsize_axis_labels)
+                    plt.ylabel(r'$y$ (m)',fontsize=fontsize_axis_labels)
             elif plane == "xy":
                 if not latex:
                     plt.xlabel("x (km x 1000)",fontsize=fontsize_axis_labels)
@@ -949,6 +1129,9 @@ def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_ima
                 else:
                     plt.xlabel(r'$\displaystyle x$ (km)',fontsize=fontsize_axis_labels)
                     plt.ylabel(r'$\displaystyle z$ (km)',fontsize=fontsize_axis_labels)
+                if rayleigh_taylor_option == "van-kek":
+                    plt.xlabel(r'$x$ (m)',fontsize=fontsize_axis_labels)
+                    plt.ylabel(r'$y$ (m)',fontsize=fontsize_axis_labels)
             elif plane == "xy":
                 if not latex:
                     plt.xlabel("x (km x 1000)",fontsize=fontsize_axis_labels)
@@ -966,25 +1149,34 @@ def plot_field(title,what,field,clip,gpow,zero_mean=False,cbar_label="",plot_ima
 
 #   Print the run description on the plot
 
+    description_alignment = "right"
+    if   description_alignment == "left":
+        x_description = x_min+0.01*(x_max-x_min)
+    elif description_alignment == "center":
+        x_description = x_min+(x_max-x_min)/5
+        description_alignment == "left"
+    elif description_alignment == "right":
+        x_description = x_max-0.01*(x_max-x_min)
+
     if plot_image == False: col_description = "k"
     else:                   col_description = description_color
     if description_location == "image":
         if description_box:
-            plt.text(x_max-0.01*(x_max-x_min),z_min-0.14*(z_min-z_max),description,fontsize=fontsize_axis_labels,color=col_description,horizontalalignment='right',fontweight='bold',bbox=dict(boxstyle='square,pad=0.3',facecolor='white',edgecolor='black',linewidth=0.5))
+            plt.text(x_description,z_min-0.14*(z_min-z_max),description,fontsize=fontsize_title,color=col_description,horizontalalignment=description_alignment,fontweight='bold',bbox=dict(boxstyle='square,pad=0.3',facecolor='white',edgecolor='black',linewidth=0.5))
         else:
             if col_description == "white" or col_description == "w": weight = 'black'
             else:                                                    weight = 'semibold'
-            plt.text(x_max-0.01*(x_max-x_min),z_min-0.09*(z_min-z_max),description,fontsize=fontsize_axis_labels,color=col_description,horizontalalignment='right',fontweight=weight)
+            plt.text(x_description,z_min-0.09*(z_min-z_max),description,fontsize=fontsize_title,color=col_description,horizontalalignment=description_alignment,fontweight=weight)
     elif description_location == "frame":
         if aspect <= 1.5: yshift = -0.03
         else:             yshift =  0.0
         if description_box:
 
-            plt.figtext(0.99,0.06+yshift,description,fontsize=fontsize_axis_labels,color=col_description,horizontalalignment='right',fontweight='bold',bbox=dict(boxstyle='square,pad=0.3',facecolor='white',edgecolor='black',linewidth=0.5))
+            plt.figtext(x_description/(x_max-x_min),0.06+yshift,description,fontsize=fontsize_title,color=col_description,horizontalalignment=description_alignment,fontweight='bold',bbox=dict(boxstyle='square,pad=0.3',facecolor='white',edgecolor='black',linewidth=0.5))
         else:
             if col_description == "white" or col_description == "w": weight = 'black'
             else:                                                    weight = 'semibold'
-            plt.figtext(0.99,0.04+yshift,description,fontsize=fontsize_axis_labels,color=col_description,horizontalalignment='right',fontweight=weight)
+            plt.figtext(x_description/(x_max-x_min),0.04+yshift,description,fontsize=fontsize_title,color=col_description,horizontalalignment=description_alignment,fontweight=weight)
 
 #   Set the filename and save the figure
 
@@ -1177,6 +1369,25 @@ def get_max_min_field_all(field):
         return max_value[0],min_value[0]
     else:
         return 0,0
+
+
+#-------------------------------------------------------------------------------
+# Get the sum of a field and put onto core 0
+#-------------------------------------------------------------------------------
+
+def get_sum_field(field):
+
+    global Rx, Ry, Rz, mx, my, mz, xedge, yedge, zedge
+
+    sum_fieldi = np.zeros(1,dtype=field.dtype)
+    sum_field  = np.zeros(1,dtype=field.dtype)
+    if rank < nr:
+        sum_fieldi = np.sum(field[yedge:my[Ry]+yedge,zedge:mz[Rz]+zedge,xedge:mx[Rx]+xedge])*np.ones(1,dtype=field.dtype)
+
+    comm.Reduce(sum_fieldi,sum_field,op=MPI.SUM,root=0)
+    comm.Barrier()
+
+    return sum_field[0]
 
 #-------------------------------------------------------------------------------
 # Get the mean of a field and put onto core 0
@@ -1387,7 +1598,7 @@ def print_timing():
                 print("==================================================================",file=output_print,flush=True)
                 print("Run complete: run/project = %s/%s at %s" %(RUN,PROJECT,date_string),file=output_print,flush=True)
                 print("------------------------------------------------------------------",flush=True)
-                print("Accuracy health check: mach(ave,max) = (%5.3f,%5.3f)" %(mach_max_ave,mach_max_run),end="",flush=True)
+                print("Accuracy health check: mach(ave,max) = (%5.3g,%5.3g)" %(mach_max_ave,mach_max_run),end="",flush=True)
                 if mach_max_ave > 0.05: print(", Warning for high Ma: Ma_ave > 0.05",end="",flush=True)
                 if mach_max_run > 0.05: print(", Warning for high Ma: Ma_max > 0.05",end="",flush=True)
                 print("",flush=True)
@@ -1426,14 +1637,14 @@ def initialize_distributions_fast():
                   f_r [:,:,a,:] = rho_r  * (C_r[a] + w[a] * (    3*cu + 4.5*cu**2 - 1.5*u2))
                   f_b [:,:,a,:] = rho_b  * (C_b[a] + w[a] * (    3*cu + 4.5*cu**2 - 1.5*u2))
               g   [:,:,a,:] = eta    * rho     * w[a] * (1 + 3*cu + 4.5*cu**2 - 1.5*u2)
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,a,:] = L_ed             * w[a] * (1 + 3*cu + 4.5*cu**2 - 1.5*u2)
     else:
        for a in range(na):
            if shifted_distribution: f[:,:,a,:] = 0
            else:                    f[:,:,a,:] = w[a]
            g[:,:,a,:] = eta * w[a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[:,:,a,:] = L_ed * w[a]
             
 #-------------------------------------------------------------------------------
@@ -1454,7 +1665,7 @@ def initialize_distributions():
               f_r[:,:,a,:]  = rho_r * (C_r[a] + w[a] * (3*cu + 4.5*cu**2 - 1.5*u2))
               f_b[:,:,a,:]  = rho_b * (C_b[a] + w[a] * (3*cu + 4.5*cu**2 - 1.5*u2))
               g[:,:,a,:]    = eta   * rho     * w[a] * (1 + 3*cu + 4.5*cu**2 - 1.5*u2)
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,a,:] = L_ed  * w[a] * (1 + 3*cu + 4.5*cu**2 - 1.5*u2)
 
         else :  
@@ -1464,7 +1675,7 @@ def initialize_distributions():
            else:
               f[:,:,a,:] = rho * w[a] * (1 + 3*cu + 4.5*cu**2 - 1.5*u2)
               g[:,:,a,:] = eta * f[:,:,a,:]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,a,:] = L_ed * w[a] * (1 + 3*cu + 4.5*cu**2 - 1.5*u2)
 
 #===============================================================================
@@ -1948,15 +2159,6 @@ def initialize_BC():
                     if (D == 2 and c[aD[a],X] == c[aU[b],X]) or (D == 3 and c[aD[a],X] == c[aU[b],X] and c[aD[a],Y] == c[aU[b],Y]):
                         biU[a] = aD[b]
 
-#    elif BC_lower == "free_slip":
-#        for a in range(naU):
-#            for b in range(naD):
-#                if c[aU[a],Z] == -c[aD[b],Z]:
-#                    if (D == 2 and c[aU[a],X] == c[aD[b],X]) or (D == 3 and c[aU[a],X] == c[aD[b],X] and c[aU[a],Y] == c[aD[b],Y]):
-#                        biU[a] = aD[b]
-
-
-
 #-------------------------------------------------------------------------------
 # Apply fixed or free_slip BC as required (used for code = python runs)
 #-------------------------------------------------------------------------------
@@ -1978,7 +2180,7 @@ def apply_BC():
               f_r[:,:,bR[a],xl] = f_r[:,:,biR[a],xl]   
               f_b[:,:,bR[a],xl] = f_b[:,:,biR[a],xl]
               g[:,:,bR[a],xl]   = g  [:,:,biR[a],xl]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,bR[a],xl] = h[:,:,biR[a],xl]
             
           for a in range(naR,nbR):
@@ -1991,7 +2193,7 @@ def apply_BC():
               tmp              = 0.5*(g[:,:,bR[a],xl] + g[:,:,biR[a],xl])
               g[:,:,bR [a],xl] = tmp
               g[:,:,biR[a],xl] = tmp
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  tmp              = 0.5*(h[:,:,bR[a],xl] + h[:,:,biR[a],xl])
                  h[:,:,bR [a],xl] = tmp
                  h[:,:,biR[a],xl] = tmp
@@ -2001,7 +2203,7 @@ def apply_BC():
           for a in range(naR):
               f[:,:,bR[a],xl] = f[:,:,biR[a],xl]
               g[:,:,bR[a],xl] = g[:,:,biR[a],xl]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,bR[a],xl] = h[:,:,biR[a],xl]
 
           for a in range(naR,nbR):   
@@ -2011,7 +2213,7 @@ def apply_BC():
               tmp              = 0.5*(g[:,:,bR[a],xl] + g[:,:,biR[a],xl])
               g[:,:,bR [a],xl] = tmp
               g[:,:,biR[a],xl] = tmp
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  tmp              = 0.5*(h[:,:,bR[a],xl] + h[:,:,biR[a],xl])
                  h[:,:,bR [a],xl] = tmp
                  h[:,:,biR[a],xl] = tmp
@@ -2023,7 +2225,7 @@ def apply_BC():
               f_r[:,:,bL[a],xr] = f_r[:,:,biL[a],xr]
               f_b[:,:,bL[a],xr] = f_b[:,:,biL[a],xr]
               g[:,:,bL[a],xr]   = g  [:,:,biL[a],xr]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,bL[a],xr] = h[:,:,biL[a],xr]
 
           for a in range(naL,nbL):
@@ -2036,7 +2238,7 @@ def apply_BC():
               tmp              = 0.5*(g[:,:,bL[a],xr] + g[:,:,biL[a],xr])
               g[:,:,bL [a],xr] = tmp
               g[:,:,biL[a],xr] = tmp
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  tmp              = 0.5*(h[:,:,bL[a],xr] + h[:,:,biL[a],xr])
                  h[:,:,bL [a],xr] = tmp
                  h[:,:,biL[a],xr] = tmp
@@ -2045,7 +2247,7 @@ def apply_BC():
           for a in range(naL):
               f[:,:,bL[a],xr] = f[:,:,biL[a],xr]
               g[:,:,bL[a],xr] = g[:,:,biL[a],xr]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,:,bL[a],xr] = h[:,:,biL[a],xr]
 
           for a in range(naL,nbL):
@@ -2055,7 +2257,7 @@ def apply_BC():
               tmp              = 0.5*(g[:,:,bL[a],xr] + g[:,:,biL[a],xr])
               g[:,:,bL [a],xr] = tmp
               g[:,:,biL[a],xr] = tmp
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  tmp              = 0.5*(h[:,:,bL[a],xr] + h[:,:,biL[a],xr])
                  h[:,:,bL [a],xr] = tmp
                  h[:,:,biL[a],xr] = tmp
@@ -2070,7 +2272,7 @@ def apply_BC():
                f_r[:,zu,bD[a],:] = f_r[:,zu,biD[a],:]
                f_b[:,zu,bD[a],:] = f_b[:,zu,biD[a],:]
                g[:,zu,bD[a],:]   = g  [:,zu,biD[a],:]
-               if rheology == "archean2":
+               if rheology == "archean2" or rheology == "van-keken-miscible":
                   h[:,zu,bD[a],:] = h[:,zu,biD[a],:]
            for a in range(naD,nbD):
                tmp              = 0.5*(f_r[:,zu,bD[a],:] + f_r[:,zu,biD[a],:])
@@ -2082,7 +2284,7 @@ def apply_BC():
                tmp              = 0.5*(g[:,zu,bD[a],:] + g[:,zu,biD[a],:])
                g[:,zu,bD [a],:] = tmp
                g[:,zu,biD[a],:] = tmp
-               if rheology == "archean2":
+               if rheology == "archean2" or rheology == "van-keken-miscible":
                   tmp              = 0.5*(h[:,zu,bD[a],:] + h[:,zu,biD[a],:])
                   h[:,zu,bD [a],:] = tmp
                   h[:,zu,biD[a],:] = tmp
@@ -2091,7 +2293,7 @@ def apply_BC():
            for a in range(naD):
                f[:,zu,bD[a],:] = f[:,zu,biD[a],:]
                g[:,zu,bD[a],:] = g[:,zu,biD[a],:]
-               if rheology == "archean2":
+               if rheology == "archean2" or rheology == "van-keken-miscible":
                   h[:,zu,bD[a],:] = h[:,zu,biD[a],:]
            for a in range(naD,nbD):
                tmp              = 0.5*(f[:,zu,bD[a],:] + f[:,zu,biD[a],:])
@@ -2100,7 +2302,7 @@ def apply_BC():
                tmp              = 0.5*(g[:,zu,bD[a],:] + g[:,zu,biD[a],:])
                g[:,zu,bD [a],:] = tmp
                g[:,zu,biD[a],:] = tmp
-               if rheology == "archean2":
+               if rheology == "archean2" or rheology == "van-keken-miscible":
                   tmp              = 0.5*(h[:,zu,bD[a],:] + h[:,zu,biD[a],:])
                   h[:,zu,bD [a],:] = tmp
                   h[:,zu,biD[a],:] = tmp
@@ -2111,7 +2313,7 @@ def apply_BC():
               f_r[:,zd,bU[a],:] = f_r[:,zd,biU[a],:]
               f_b[:,zd,bU[a],:] = f_b[:,zd,biU[a],:]
               g[:,zd,bU[a],:]   = g  [:,zd,biU[a],:]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,zd,bU[a],:] = h[:,zd,biU[a],:]
           for a in range(naU,nbU):
               tmp              = 0.5*(f_r[:,zd,bU[a],:] + f_r[:,zd,biU[a],:])
@@ -2123,7 +2325,7 @@ def apply_BC():
               tmp              = 0.5*(g[:,zd,bU[a],:] + g[:,zd,biU[a],:])
               g[:,zd,bU [a],:] = tmp
               g[:,zd,biU[a],:] = tmp
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  tmp              = 0.5*(h[:,zd,bU[a],:] + h[:,zd,biU[a],:])
                  h[:,zd,bU [a],:] = tmp
                  h[:,zd,biU[a],:] = tmp
@@ -2132,7 +2334,7 @@ def apply_BC():
           for a in range(naU):
               f[:,zd,bU[a],:] = f[:,zd,biU[a],:]
               g[:,zd,bU[a],:] = g[:,zd,biU[a],:]
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  h[:,zd,bU[a],:] = h[:,zd,biU[a],:]
           for a in range(naU,nbU):
               tmp              = 0.5*(f[:,zd,bU[a],:] + f[:,zd,biU[a],:])
@@ -2141,7 +2343,7 @@ def apply_BC():
               tmp              = 0.5*(g[:,zd,bU[a],:] + g[:,zd,biU[a],:])
               g[:,zd,bU [a],:] = tmp
               g[:,zd,biU[a],:] = tmp
-              if rheology == "archean2":
+              if rheology == "archean2" or rheology == "van-keken-miscible":
                  tmp              = 0.5*(h[:,zd,bU[a],:] + h[:,zd,biU[a],:])
                  h[:,zd,bU [a],:] = tmp
                  h[:,zd,biU[a],:] = tmp
@@ -2156,7 +2358,7 @@ def apply_BC():
                 f_r[yb,:,bF[a],:] = f_r[yb,:,biF[a],:]
                 f_b[yb,:,bF[a],:] = f_b[yb,:,biF[a],:]
                 g[yb,:,bF[a],:]   = g  [yb,:,biF[a],:]
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    h[yb,:,bF[a],:] = h[yb,:,biF[a],:]
             for a in range(naF,nbF):
                 tmp              = 0.5*(f_r[yb,:,bF[a],:] + f_r[yb,:,biF[a],:])
@@ -2168,7 +2370,7 @@ def apply_BC():
                 tmp              = 0.5*(g[yb,:,bF[a],:] + g[yb,:,biF[a],:])
                 g[yb,:,bF [a],:] = tmp
                 g[yb,:,biF[a],:] = tmp
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    tmp              = 0.5*(h[yb,:,bF[a],:] + h[yb,:,biF[a],:])
                    h[yb,:,bF [a],:] = tmp
                    h[yb,:,biF[a],:] = tmp
@@ -2177,7 +2379,7 @@ def apply_BC():
             for a in range(naF):
                 f[yb,:,bF[a],:] = f[yb,:,biF[a],:]
                 g[yb,:,bF[a],:] = g[yb,:,biF[a],:]
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    h[yb,:,bF[a],:] = h[yb,:,biF[a],:]
             for a in range(naF,nbF):
                 tmp              = 0.5*(f[yb,:,bF[a],:] + f[yb,:,biF[a],:])
@@ -2186,7 +2388,7 @@ def apply_BC():
                 tmp              = 0.5*(g[yb,:,bF[a],:] + g[yb,:,biF[a],:])
                 g[yb,:,bF [a],:] = tmp
                 g[yb,:,biF[a],:] = tmp
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    tmp              = 0.5*(h[yb,:,bF[a],:] + h[yb,:,biF[a],:])
                    h[yb,:,bF [a],:] = tmp
                    h[yb,:,biF[a],:] = tmp
@@ -2197,7 +2399,7 @@ def apply_BC():
                 f_r[yf,:,bB[a],:] = f_r[yf,:,biB[a],:]
                 f_b[yf,:,bB[a],:] = f_b[yf,:,biB[a],:]
                 g[yf,:,bB[a],:]   = g  [yf,:,biB[a],:]
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    h[yf,:,bB[a],:] = h[yf,:,biB[a],:]
             for a in range(naB,nbB):
                 tmp              = 0.5*(f_r[yb,:,bB[a],:] + f_r[yb,:,biB[a],:])
@@ -2209,7 +2411,7 @@ def apply_BC():
                 tmp              = 0.5*(g[yb,:,bB[a],:] + g[yb,:,biB[a],:])
                 g[yb,:,bB [a],:] = tmp
                 g[yb,:,biB[a],:] = tmp
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    tmp              = 0.5*(h[yb,:,bB[a],:] + h[yb,:,biB[a],:])
                    h[yb,:,bB [a],:] = tmp
                    h[yb,:,biB[a],:] = tmp
@@ -2218,7 +2420,7 @@ def apply_BC():
             for a in range(naB):
                 f[yf,:,bB[a],:] = f[yf,:,biB[a],:]
                 g[yf,:,bB[a],:] = g[yf,:,biB[a],:]
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    h[yf,:,bB[a],:] = h[yf,:,biB[a],:]
             for a in range(naB,nbB):
                 tmp              = 0.5*(f[yb,:,bB[a],:] + f[yb,:,biB[a],:])
@@ -2227,7 +2429,7 @@ def apply_BC():
                 tmp              = 0.5*(g[yb,:,bB[a],:] + g[yb,:,biB[a],:])
                 g[yb,:,bB [a],:] = tmp
                 g[yb,:,biB[a],:] = tmp
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    tmp              = 0.5*(h[yb,:,bB[a],:] + h[yb,:,biB[a],:])
                    h[yb,:,bB [a],:] = tmp
                    h[yb,:,biB[a],:] = tmp
@@ -2244,8 +2446,8 @@ def apply_BC():
 
 def initialize_get_edges():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_F, i_G, i_H, i_F_r, i_F_b
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL, edgeR, edgeU, edgeD, edgeB, edgeF
@@ -2372,10 +2574,8 @@ def initialize_get_edges():
        i_rho_r  = 0
        i_F_b    = 1
        i_rho_b  = 1
-       i_D_ed   = 2   # advected depletion ghosts ride the rho exchange
-       i_D_eb   = 3
        i_G      = 2
-       i_H      = 3
+       i_H      = 3      
     else: 
        i_F      = 0
        i_G      = 1
@@ -2452,31 +2652,29 @@ def initialize_get_edges():
 
         if not (overlap and code == "c"): # Case of no overlapping
             if RKTLBM :
-               # hd/hb ride the packed exchange for archean2 (slots 4,5)
-               nfg_rk      = 4   # hd/hb retired from the packed exchange (TVD scalars now)
-               fgL         = np.zeros((nfg_rk,naL,my_i,mz_i),dtype=np_edge)
-               fgR         = np.zeros((nfg_rk,naL,my_i,mz_i),dtype=np_edge)
-               fgU         = np.zeros((nfg_rk,naU,my_i,mx_i),dtype=np_edge)
-               fgD         = np.zeros((nfg_rk,naU,my_i,mx_i),dtype=np_edge)
-               fgB         = np.zeros((nfg_rk,naB,mz_i,mx_i),dtype=np_edge)
-               fgF         = np.zeros((nfg_rk,naF,mz_i,mx_i),dtype=np_edge)
+               fgL         = np.zeros((4,naL,my_i,mz_i),dtype=np_edge)
+               fgR         = np.zeros((4,naL,my_i,mz_i),dtype=np_edge)
+               fgU         = np.zeros((4,naU,my_i,mx_i),dtype=np_edge)
+               fgD         = np.zeros((4,naU,my_i,mx_i),dtype=np_edge)
+               fgB         = np.zeros((4,naB,mz_i,mx_i),dtype=np_edge)
+               fgF         = np.zeros((4,naF,mz_i,mx_i),dtype=np_edge)
 
-               edgeL       = np.zeros((nfg_rk,naL,my_i,mz_i),dtype=np_edge)
-               edgeR       = np.zeros((nfg_rk,naL,my_i,mz_i),dtype=np_edge)
-               edgeU       = np.zeros((nfg_rk,naU,my_i,mx_i),dtype=np_edge)
-               edgeD       = np.zeros((nfg_rk,naU,my_i,mx_i),dtype=np_edge)
-               edgeB       = np.zeros((nfg_rk,naB,mz_i,mx_i),dtype=np_edge)
-               edgeF       = np.zeros((nfg_rk,naF,mz_i,mx_i),dtype=np_edge)
+               edgeL       = np.zeros((4,naL,my_i,mz_i),dtype=np_edge)
+               edgeR       = np.zeros((4,naL,my_i,mz_i),dtype=np_edge)
+               edgeU       = np.zeros((4,naU,my_i,mx_i),dtype=np_edge)
+               edgeD       = np.zeros((4,naU,my_i,mx_i),dtype=np_edge)
+               edgeB       = np.zeros((4,naB,mz_i,mx_i),dtype=np_edge)
+               edgeF       = np.zeros((4,naF,mz_i,mx_i),dtype=np_edge)
 
-               rhoL        = np.zeros((4,my_i,mz_i),dtype=np_edge)
-               rhoR        = np.zeros((4,my_i,mz_i),dtype=np_edge)
+               rhoL        = np.zeros((2,my_i,mz_i),dtype=np_edge)
+               rhoR        = np.zeros((2,my_i,mz_i),dtype=np_edge)
                rhoU        = np.zeros((2,my_i,mx_i),dtype=np_edge)
                rhoD        = np.zeros((2,my_i,mx_i),dtype=np_edge)
                rhoB        = np.zeros((2,mz_i,mx_i),dtype=np_edge)
                rhoF        = np.zeros((2,mz_i,mx_i),dtype=np_edge)
 
-               edge_rho_L  = np.zeros((4,my_i,mz_i),dtype=np_edge)
-               edge_rho_R  = np.zeros((4,my_i,mz_i),dtype=np_edge)
+               edge_rho_L  = np.zeros((2,my_i,mz_i),dtype=np_edge)
+               edge_rho_R  = np.zeros((2,my_i,mz_i),dtype=np_edge)
                edge_rho_U  = np.zeros((2,my_i,mx_i),dtype=np_edge)
                edge_rho_D  = np.zeros((2,my_i,mx_i),dtype=np_edge)
                edge_rho_B  = np.zeros((2,mz_i,mx_i),dtype=np_edge)
@@ -2498,15 +2696,15 @@ def initialize_get_edges():
                edgeB       = np.zeros((3,naB,mz_i,mx_i),dtype=np_edge)
                edgeF       = np.zeros((3,naF,mz_i,mx_i),dtype=np_edge)
             
-               rhoL        = np.zeros((4,my_i,mz_i),dtype=np_edge)
-               rhoR        = np.zeros((4,my_i,mz_i),dtype=np_edge)
+               rhoL        = np.zeros((2,my_i,mz_i),dtype=np_edge)
+               rhoR        = np.zeros((2,my_i,mz_i),dtype=np_edge)
                rhoU        = np.zeros((2,my_i,mx_i),dtype=np_edge)
                rhoD        = np.zeros((2,my_i,mx_i),dtype=np_edge)
                rhoB        = np.zeros((2,mz_i,mx_i),dtype=np_edge)
                rhoF        = np.zeros((2,mz_i,mx_i),dtype=np_edge)
             
-               edge_rho_L  = np.zeros((4,my_i,mz_i),dtype=np_edge)
-               edge_rho_R  = np.zeros((4,my_i,mz_i),dtype=np_edge)
+               edge_rho_L  = np.zeros((2,my_i,mz_i),dtype=np_edge)
+               edge_rho_R  = np.zeros((2,my_i,mz_i),dtype=np_edge)
                edge_rho_U  = np.zeros((2,my_i,mx_i),dtype=np_edge)
                edge_rho_D  = np.zeros((2,my_i,mx_i),dtype=np_edge)
                edge_rho_B  = np.zeros((2,mz_i,mx_i),dtype=np_edge)
@@ -2659,8 +2857,8 @@ def get_edges():
 
 def get_edgesX():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_F, i_G, i_H, i_F_r, i_F_b
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -2677,13 +2875,13 @@ def get_edgesX():
            fgR[i_F_r,a] = f_r [0:my_i,0:mz_i,aL[a],1     ]
            fgR[i_F_b,a] = f_b [0:my_i,0:mz_i,aL[a],1     ]
            fgR[i_G,a]   = g   [0:my_i,0:mz_i,aL[a],1     ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgR[i_H,a] = h  [0:my_i,0:mz_i,aL[a],1     ]
     else:
        for a in range(naL):
            fgR[i_F,a] = f[0:my_i,0:mz_i,aL[a],1     ]
            fgR[i_G,a] = g[0:my_i,0:mz_i,aL[a],1     ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgR[i_H,a] = h[0:my_i,0:mz_i,aL[a],1     ]
 
     if RKTLBM:
@@ -2691,14 +2889,14 @@ def get_edgesX():
            fgL[i_F_r,a] = f_r [0:my_i,0:mz_i,aR[a],mx[Rx]]
            fgL[i_F_b,a] = f_b [0:my_i,0:mz_i,aR[a],mx[Rx]]
            fgL[i_G,a]   = g   [0:my_i,0:mz_i,aR[a],mx[Rx]]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgL[i_H,a] = h  [0:my_i,0:mz_i,aR[a],mx[Rx]]
            
     else:       
        for a in range(naR):
            fgL[i_F,a] = f[0:my_i,0:mz_i,aR[a],mx[Rx]]
            fgL[i_G,a] = g[0:my_i,0:mz_i,aR[a],mx[Rx]]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgL[i_H,a] = h[0:my_i,0:mz_i,aR[a],mx[Rx]]
 
     MPI.Prequest.Startall([reqSendR, reqRecvR, reqSendL, reqRecvL])
@@ -2709,26 +2907,26 @@ def get_edgesX():
            f_r[0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_F_r,a]
            f_b[0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_F_b,a]
            g  [0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_H,a]
     else:
        for a in range(naL):
            f[0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_F,a]
            g[0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,0:mz_i,aL[a],mx[Rx]+1] = edgeR[i_H,a]
     if RKTLBM:
        for a in range(naR):
            f_r[0:my_i,0:mz_i,aR[a],0       ] = edgeL[i_F_r,a]
            f_b[0:my_i,0:mz_i,aR[a],0       ] = edgeL[i_F_b,a]
            g  [0:my_i,0:mz_i,aR[a],0       ] = edgeL[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,0:mz_i,aR[a],0      ] = edgeL[i_H,a]
     else: 
        for a in range(naR):
            f[0:my_i,0:mz_i,aR[a],0       ] = edgeL[i_F,a]
            g[0:my_i,0:mz_i,aR[a],0       ] = edgeL[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,0:mz_i,aR[a],0       ] = edgeL[i_H,a]
 
 #-------------------------------------------------------------------------------
@@ -2737,8 +2935,8 @@ def get_edgesX():
 
 def get_edgesZ():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_F, i_G, i_H, i_F_r, i_F_b
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -2755,26 +2953,26 @@ def get_edgesZ():
            fgD[i_F_r,a] = f_r[0:my_i,1     ,aU[a],0:mx_i]
            fgD[i_F_b,a] = f_b[0:my_i,1     ,aU[a],0:mx_i]
            fgD[i_G,a]   = g  [0:my_i,1     ,aU[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgD[i_H,a] = h [0:my_i,1     ,aU[a],0:mx_i]
     else:
        for a in range(naU):
            fgD[i_F,a] = f[0:my_i,1     ,aU[a],0:mx_i]
            fgD[i_G,a] = g[0:my_i,1     ,aU[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgD[i_H,a] = h[0:my_i,1     ,aU[a],0:mx_i]
     if RKTLBM:
        for a in range(naD):
            fgU[i_F_r,a] = f_r[0:my_i,mz[Rz],aD[a],0:mx_i]
            fgU[i_F_b,a] = f_b[0:my_i,mz[Rz],aD[a],0:mx_i]
            fgU[i_G,a]   = g  [0:my_i,mz[Rz],aD[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgU[i_H,a] = h [0:my_i,mz[Rz],aD[a],0:mx_i]
     else:
        for a in range(naD):
            fgU[i_F,a] = f[0:my_i,mz[Rz],aD[a],0:mx_i]
            fgU[i_G,a] = g[0:my_i,mz[Rz],aD[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgU[i_H,a] = h[0:my_i,mz[Rz],aD[a],0:mx_i]
 
     MPI.Prequest.Startall([reqSendD, reqRecvD, reqSendU, reqRecvU])
@@ -2785,13 +2983,13 @@ def get_edgesZ():
            f_r[0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_F_r,a]
            f_b[0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_F_b,a]
            g  [0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_G,a]           
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_H,a]
     else:
        for a in range(naU):
            f[0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_F,a]
            g[0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,mz[Rz]+1,aU[a],0:mx_i] = edgeD[i_H,a]     
 
     if RKTLBM:
@@ -2799,13 +2997,13 @@ def get_edgesZ():
            f_r[0:my_i,0       ,aD[a],0:mx_i] = edgeU[i_F_r,a]
            f_b[0:my_i,0       ,aD[a],0:mx_i] = edgeU[i_F_b,a]
            g  [0:my_i,0       ,aD[a],0:mx_i] = edgeU[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,0      ,aD[a],0:mx_i] = edgeU[i_H,a]
     else:
        for a in range(naD):
            f[0:my_i,0       ,aD[a],0:mx_i] = edgeU[i_F,a]
            g[0:my_i,0       ,aD[a],0:mx_i] = edgeU[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0:my_i,0       ,aD[a],0:mx_i] = edgeU[i_H,a]
         
 #-------------------------------------------------------------------------------
@@ -2814,8 +3012,8 @@ def get_edgesZ():
 
 def get_edgesY():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_F, i_G, i_H, i_F_r, i_F_b
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -2832,13 +3030,13 @@ def get_edgesY():
            fgF[i_F_r,a] = f_r[1     ,0:mz_i,aB[a],0:mx_i]
            fgF[i_F_b,a] = f_b[1     ,0:mz_i,aB[a],0:mx_i]
            fgF[i_G,a]   = g  [1     ,0:mz_i,aB[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgF[i_H,a] = h [1     ,0:mz_i,aB[a],0:mx_i]
     else:
        for a in range(naB):
            fgF[i_F,a]    = f[1     ,0:mz_i,aB[a],0:mx_i]
            fgF[i_G,a]    = g[1     ,0:mz_i,aB[a],0:mx_i]
-           if rheology  == "archean2":
+           if rheology  == "archean2" or rheology == "van-keken-miscible":
               fgF[i_H,a] = h[1  ,0:mz_i,aB[a],0:mx_i]
         
     if RKTLBM:
@@ -2846,13 +3044,13 @@ def get_edgesY():
            fgB[i_F_r,a]  = f_r[my[Ry],0:mz_i,aF[a],0:mx_i]
            fgB[i_F_b,a]  = f_b[my[Ry],0:mz_i,aF[a],0:mx_i]
            fgB[i_G,a]    = g  [my[Ry],0:mz_i,aF[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgB[i_H,a] = h  [my[Ry],0:mz_i,aF[a],0:mx_i]
     else: 
        for a in range(naF):
            fgB[i_F,a] = f[my[Ry],0:mz_i,aF[a],0:mx_i]
            fgB[i_G,a] = g[my[Ry],0:mz_i,aF[a],0:mx_i]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgB[i_H,a] = h[my[Ry],0:mz_i,aF[a],0:mx_i]
 
     MPI.Prequest.Startall([reqSendF, reqRecvF, reqSendB, reqRecvB])
@@ -2863,26 +3061,26 @@ def get_edgesY():
            f_r[my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_F_r,a]
            F_b[my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_F_b,a]
            g  [my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_H,a]
     else:
        for a in range(naB):
            f[my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_F,a]
            g[my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[my[Ry]+1,0:mz_i,aB[a],0:mx_i] = edgeF[i_H,a]
     if RKTLBM:
        for a in range(naF):
            f_r[0       ,0:mz_i,aF[a],0:mx_i] = edgeB[i_F_r,a]
            f_b[0       ,0:mz_i,aF[a],0:mx_i] = edgeB[i_F_b,a]
            g  [0       ,0:mz_i,aF[a],0:mx_i] = edgeB[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0      ,0:mz_i,aF[a],0:mx_i] = edgeB[i_H,a]
     else:
        for a in range(naF):
            f[0       ,0:mz_i,aF[a],0:mx_i] = edgeB[i_F,a]
            g[0       ,0:mz_i,aF[a],0:mx_i] = edgeB[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h[0       ,0:mz_i,aF[a],0:mx_i] = edgeB[i_H,a]
         
 
@@ -2890,33 +3088,10 @@ def get_edgesY():
 # Start send/recv requests to get edges for overlap = True
 #-------------------------------------------------------------------------------
 
-def get_edges_hd():
-    # Standalone X-halo exchange for the advected-depletion populations hd.
-    # Covers the x-direction only, so melt runs with hd must use
-    # domain_decomposition = 1D. Column 1 goes to the left neighbour's right
-    # halo and column mx to the right neighbour's left halo, matching the
-    # packed f/g/h exchange (fgR -> rl, fgL -> rr). rl/rr are MPI.PROC_NULL
-    # at non-periodic domain edges, which makes the Sendrecv a no-op there.
-    mxx   = mxi   # per-rank physical width: hd.shape[3]-2 is wrong on the last rank (mx < nxi)
-    sendL = np.ascontiguousarray(hd[:,:,:,1])
-    sendR = np.ascontiguousarray(hd[:,:,:,mxx])
-    recvR = np.empty_like(sendL)
-    recvL = np.empty_like(sendR)
-    comm.Sendrecv(sendL, dest=rl, sendtag=21, recvbuf=recvR, source=rr, recvtag=21)
-    comm.Sendrecv(sendR, dest=rr, sendtag=22, recvbuf=recvL, source=rl, recvtag=22)
-    hd[:,:,:,mxx+1] = recvR
-    hd[:,:,:,0]     = recvL
-    sendL = np.ascontiguousarray(hb[:,:,:,1])
-    sendR = np.ascontiguousarray(hb[:,:,:,mxx])
-    comm.Sendrecv(sendL, dest=rl, sendtag=23, recvbuf=recvR, source=rr, recvtag=23)
-    comm.Sendrecv(sendR, dest=rr, sendtag=24, recvbuf=recvL, source=rl, recvtag=24)
-    hb[:,:,:,mxx+1] = recvR
-    hb[:,:,:,0]     = recvL
-
 def get_edges_start(): # Start sending faces without face corners
                        # to overlap with interior calculations
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global R, Rx, Ry, Rz
     global xedge, yedge, zedge, nx_i, ny_i, nz_i, mxi, myi, mzi, mx_i, my_i, mz_i
 
@@ -2961,7 +3136,7 @@ def get_edges_start(): # Start sending faces without face corners
            fgLD[i_G] = g    [y1:y2,1    ,aRU,mxi  ]
            fgRU[i_G] = g    [y1:y2,mzi  ,aLD,1    ]
            fgLU[i_G] = g    [y1:y2,mzi  ,aRD,mxi  ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgRD[i_H] = h [y1:y2,1    ,aLU,1    ]
               fgLD[i_H] = h [y1:y2,1    ,aRU,mxi  ]
               fgRU[i_H] = h [y1:y2,mzi  ,aLD,1    ]
@@ -2977,7 +3152,7 @@ def get_edges_start(): # Start sending faces without face corners
            fgRU[i_G] = g[y1:y2,mzi  ,aLD,1    ]
            fgLU[i_F] = f[y1:y2,mzi  ,aRD,mxi  ]
            fgLU[i_G] = g[y1:y2,mzi  ,aRD,mxi  ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgRD[i_H] = h[y1:y2,1    ,aLU,1    ]
               fgLD[i_H] = h[y1:y2,1    ,aRU,mxi  ]
               fgRU[i_H] = h[y1:y2,mzi  ,aLD,1    ]
@@ -2999,7 +3174,7 @@ def get_edges_start(): # Start sending faces without face corners
         fgBD[i_G] = g    [myi  ,1    ,aFU,x1:x2]
         fgFU[i_G] = g    [1    ,mzi  ,aBD,x1:x2]
         fgBU[i_G] = g    [myi  ,mzi  ,aFD,x1:x2]
-        if rheology == "archean2":
+        if rheology == "archean2" or rheology == "van-keken-miscible":
            fgFD[i_H] = h [1    ,1    ,aBU,x1:x2]
            fgBD[i_H] = h [myi  ,1    ,aFU,x1:x2]
            fgFU[i_H] = h [1    ,mzi  ,aBD,x1:x2]
@@ -3017,7 +3192,7 @@ def get_edges_start(): # Start sending faces without face corners
            fgFU[i_G] = g[1    ,mzi  ,aBD,x1:x2]
            fgBU[i_F] = f[myi  ,mzi  ,aFD,x1:x2]
            fgBU[i_G] = g[myi  ,mzi  ,aFD,x1:x2]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgFD[i_H] = h[1    ,1    ,aBU,x1:x2]
               fgBD[i_H] = h[myi  ,1    ,aFU,x1:x2]
               fgFU[i_H] = h[1    ,mzi  ,aBD,x1:x2]
@@ -3039,7 +3214,7 @@ def get_edges_start(): # Start sending faces without face corners
            fgLF[i_G] = g    [1    ,z1:z2,aRB,mxi  ]
            fgRB[i_G] = g    [myi  ,z1:z2,aLF,1    ]
            fgLB[i_G] = g    [myi  ,z1:z2,aRF,mxi  ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgRF[i_H] = h [1    ,z1:z2,aLB,1    ]
               fgLF[i_H] = h [1    ,z1:z2,aRB,mxi  ]
               fgRB[i_H] = h [myi  ,z1:z2,aLF,1    ]
@@ -3056,7 +3231,7 @@ def get_edges_start(): # Start sending faces without face corners
            fgRB[i_G] = g[myi  ,z1:z2,aLF,1    ]
            fgLB[i_F] = f[myi  ,z1:z2,aRF,mxi  ]
            fgLB[i_G] = g[myi  ,z1:z2,aRF,mxi  ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgRF[i_H] = h[1    ,z1:z2,aLB,1    ]
               fgLF[i_H] = h[1    ,z1:z2,aRB,mxi  ]
               fgRB[i_H] = h[myi  ,z1:z2,aLF,1    ]
@@ -3094,7 +3269,7 @@ def get_edges_end():  # End sending cuboid edge faces after interior calculation
 
 def get_edgesX_start():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3110,14 +3285,14 @@ def get_edgesX_start():
            fgR[i_F_r,a] = f_r[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
            fgR[i_F_b,a] = f_b[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
            fgR[i_G,a]   = g  [yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgR[i_H,a] = h[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
               
     else:
        for a in range(naL):
            fgR[i_F,a] = f[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
            fgR[i_G,a] = g[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgR[i_H,a] = h[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],1     ]
 
     if RKTLBM:
@@ -3125,14 +3300,14 @@ def get_edgesX_start():
            fgL[i_F_r,a] = f_r[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
            fgL[i_F_b,a] = f_b[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
            fgL[i_G,a]   = g  [yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgL[i_H,a] = h [yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
  
     else:
        for a in range(naR):
            fgL[i_F,a] = f[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
            fgL[i_G,a] = g[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgL[i_H,a] = h[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],mx[Rx]]
  
 
@@ -3144,7 +3319,7 @@ def get_edgesX_start():
 
 def get_edgesX_end():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3162,27 +3337,27 @@ def get_edgesX_end():
            f_r_last[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_F_r,a]
            f_b_last[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_F_b,a]
            g_last  [yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_H,a]
 
     else:
        for a in range(naL):
            f_last[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_F,a]
            g_last[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,zedge:mz_i-zedge,aL[a],mx[Rx]+1] = edgeR[i_H,a]
     if RKTLBM:
        for a in range(naR):
            f_r_last[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_F_r,a]
            f_b_last[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_F_b,a]
            g_last  [yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_H,a]
     else:
        for a in range(naR):
            f_last[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_F,a]
            g_last[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,zedge:mz_i-zedge,aR[a],0       ] = edgeL[i_H,a]
 
 #-------------------------------------------------------------------------------
@@ -3191,7 +3366,7 @@ def get_edgesX_end():
 
 def get_edgesZ_start():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3207,26 +3382,26 @@ def get_edgesZ_start():
            fgD[i_F_r,a] = f_r[yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
            fgD[i_F_b,a] = f_b[yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
            fgD[i_G,a]   = g  [yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgD[i_H,a] = h[yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
     else:
        for a in range(naU):
            fgD[i_F,a] = f[yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
            fgD[i_G,a] = g[yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgD[i_H,a] = h[yedge:my_i-yedge,1     ,aU[a],xedge:mx_i-xedge]
     if RKTLBM:
        for a in range(naD):
            fgU[i_F_r,a] = f_r[yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
            fgU[i_F_b,a] = f_b[yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
            fgU[i_G,a]   = g  [yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgU[i_H,a] = h[yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
     else:
        for a in range(naD):
            fgU[i_F,a] = f[yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
            fgU[i_G,a] = g[yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgU[i_H,a] = h[yedge:my_i-yedge,mz[Rz],aD[a],xedge:mx_i-xedge]
 
 
@@ -3238,7 +3413,7 @@ def get_edgesZ_start():
 
 def get_edgesZ_end():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3256,13 +3431,13 @@ def get_edgesZ_end():
            f_r_last[yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_F_r,a]
            f_b_last[yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_F_b,a]
            g_last  [yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
                h_last[yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_H,a]
     else:
        for a in range(naU):
            f_last[yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_F,a]
            g_last[yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,mz[Rz]+1,aU[a],xedge:mx_i-xedge] = edgeD[i_H,a]
 
     if RKTLBM:
@@ -3270,13 +3445,13 @@ def get_edgesZ_end():
            f_r_last[yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_F_r,a]
            f_b_last[yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_F_b,a]
            g_last  [yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_H,a]
     else:
        for a in range(naD):
            f_last[yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_F,a]
            g_last[yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[yedge:my_i-yedge,0       ,aD[a],xedge:mx_i-xedge] = edgeU[i_H,a]
 
 
@@ -3286,7 +3461,7 @@ def get_edgesZ_end():
 
 def get_edgesY_start():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3303,14 +3478,14 @@ def get_edgesY_start():
            fgF[i_F_r,a] = f_r[1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
            fgF[i_F_b,a] = f_b[1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
            fgF[i_G,a]   = g  [1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgF[i_H,a] = h [1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
    
     else:
        for a in range(naB):
            fgF[i_F,a] = f[1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
            fgF[i_G,a] = g[1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgF[i_H,a] = h[1     ,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge]
     
     if RKTLBM:
@@ -3318,14 +3493,14 @@ def get_edgesY_start():
            fgB[i_F_r,a] = f_r[my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge]
            fgB[i_F_b,a] = f_b[my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge]
            fgB[i_G,a]   = g  [my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgB[i_H,a] = h[my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] 
 
     else:
        for a in range(naF):
            fgB[i_F,a] = f[my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge]
            fgB[i_G,a] = g[my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               fgB[i_H,a] = h[my[Ry],zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge]
  
     MPI.Prequest.Startall([reqSendF, reqRecvF, reqSendB, reqRecvB])
@@ -3336,7 +3511,7 @@ def get_edgesY_start():
 
 def get_edgesY_end():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3354,13 +3529,13 @@ def get_edgesY_end():
            f_r_last[my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_F_r,a]
            f_b_last[my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_F_b,a]
            g_last  [my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_H,a]
     else:
        for a in range(naB):
            f_last[my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_F,a]
            g_last[my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[my[Ry]+1,zedge:mz_i-zedge,aB[a],xedge:mx_i-xedge] = edgeF[i_H,a]
 
     if RKTLBM:
@@ -3368,13 +3543,13 @@ def get_edgesY_end():
            f_r_last[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_F_r,a]
            f_b_last[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_F_b,a]
            g_lastvv[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_H,a]
     else:    
        for a in range(naF):
            f_last[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_F,a]
            g_last[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_G,a]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[0       ,zedge:mz_i-zedge,aF[a],xedge:mx_i-xedge] = edgeB[i_H,a]
 
 
@@ -3385,7 +3560,7 @@ def get_edgesY_end():
 
 def get_corners():
 
-    global i_F, i_G, i_H, i_F_r, i_F_b, i_HD, i_HB
+    global i_F, i_G, i_H, i_F_r, i_F_b
     global R, Rx, Ry, Rz
     global xedge, yedge, zedge, nx_i, ny_i, nz_i, mxi, myi, mzi, mx_i, my_i, mz_i
 
@@ -3443,7 +3618,7 @@ def get_corners():
         g_last  [y1:y2,mzi+1,aRU,0    ] = edgeLD[i_G]
         g_last  [y1:y2,0    ,aLD,mxi+1] = edgeRU[i_G]
         g_last  [y1:y2,mzi+1,aLU,mxi+1] = edgeRD[i_G]
-        if rheology == "archean2":
+        if rheology == "archean2" or rheology == "van-keken-miscible":
            h_last[y1:y2,0    ,aRD,0    ] = edgeLU[i_H]
            h_last[y1:y2,mzi+1,aRU,0    ] = edgeLD[i_H]
            h_last[y1:y2,0    ,aLD,mxi+1] = edgeRU[i_H]
@@ -3459,7 +3634,7 @@ def get_corners():
            g_last[y1:y2,0    ,aLD,mxi+1] = edgeRU[i_G]
            f_last[y1:y2,mzi+1,aLU,mxi+1] = edgeRD[i_F]
            g_last[y1:y2,mzi+1,aLU,mxi+1] = edgeRD[i_G]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[y1:y2,0    ,aRD,0    ] = edgeLU[i_H]
               h_last[y1:y2,mzi+1,aRU,0    ] = edgeLD[i_H]
               h_last[y1:y2,0    ,aLD,mxi+1] = edgeRU[i_H]
@@ -3481,7 +3656,7 @@ def get_corners():
            g_last  [0    ,mzi+1,aFU,x1:x2] = edgeBD[i_G]
            g_last  [myi+1,0    ,aBD,x1:x2] = edgeFU[i_G]
            g_last  [myi+1,mzi+1,aBU,x1:x2] = edgeFD[i_G]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[0    ,0    ,aFD,x1:x2] = edgeBU[i_H]
               h_last[0    ,mzi+1,aFU,x1:x2] = edgeBD[i_H]
               h_last[myi+1,0    ,aBD,x1:x2] = edgeFU[i_H]
@@ -3497,7 +3672,7 @@ def get_corners():
            g_last[myi+1,0    ,aBD,x1:x2] = edgeFU[i_G]
            f_last[myi+1,mzi+1,aBU,x1:x2] = edgeFD[i_F]
            g_last[myi+1,mzi+1,aBU,x1:x2] = edgeFD[i_G]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[0    ,0    ,aFD,x1:x2] = edgeBU[i_H]
               h_last[0    ,mzi+1,aFU,x1:x2] = edgeBD[i_H]        
               h_last[myi+1,0    ,aBD,x1:x2] = edgeFU[i_H]
@@ -3519,7 +3694,7 @@ def get_corners():
            g_last  [myi+1,z1:z2,aRB,0    ] = edgeLF[i_G]
            g_last  [0    ,z1:z2,aLF,mxi+1] = edgeRB[i_G]
            g_last  [myi+1,z1:z2,aLB,mxi+1] = edgeRF[i_G]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[0    ,z1:z2,aRF,0    ] = edgeLB[i_H]
               h_last[myi+1,z1:z2,aRB,0    ] = edgeLF[i_H]
               h_last[0    ,z1:z2,aLF,mxi+1] = edgeRB[i_H]
@@ -3535,7 +3710,7 @@ def get_corners():
            g_last[0    ,z1:z2,aLF,mxi+1] = edgeRB[i_G]
            f_last[myi+1,z1:z2,aLB,mxi+1] = edgeRF[i_F]
            g_last[myi+1,z1:z2,aLB,mxi+1] = edgeRF[i_G]
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               h_last[0    ,z1:z2,aRF,0    ] = edgeLB[i_H]       
               h_last[myi+1,z1:z2,aRB,0    ] = edgeLF[i_H]
               h_last[0    ,z1:z2,aLF,mxi+1] = edgeRB[i_H]
@@ -3566,14 +3741,14 @@ def get_edges_rho():
 def get_edges_rho_X():
 
     global i_F_r, i_F_b, i_G
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
     global edge_rho_L    , edge_rho_R    , edge_rho_U    , edge_rho_D    , edge_rho_B    , edge_rho_F
     global   fgL    ,   fgR    ,   fgU    ,   fgD    ,   fgB    ,   fgF
     global   rhoL    ,  rhoR    ,  rhoU    ,  rhoD    ,  rhoB    ,  rhoF
-    global rho_r, rho_b, D_ed, D_eb, i_D_ed, i_D_eb
+    global rho_r, rho_b
     global R, Rx, Ry, Rz, rr, rl, rf, rb, rd, ru
     global reqSendrhoR, reqSendrhoL, reqRecvrhoR, reqRecvrhoL
     global reqSendrhoD, reqSendrhoU, reqRecvrhoD, reqRecvrhoU
@@ -3583,11 +3758,6 @@ def get_edges_rho_X():
     rhoR[i_rho_b]   = rho_b[0:my_i,0:mz_i,1     ]
     rhoL[i_rho_r]   = rho_r[0:my_i,0:mz_i,mx[Rx]]
     rhoL[i_rho_b]   = rho_b[0:my_i,0:mz_i,mx[Rx]]
-    if rheology == "archean2":
-        rhoR[i_D_ed] = D_ed[0:my_i,0:mz_i,1     ]
-        rhoR[i_D_eb] = D_eb[0:my_i,0:mz_i,1     ]
-        rhoL[i_D_ed] = D_ed[0:my_i,0:mz_i,mx[Rx]]
-        rhoL[i_D_eb] = D_eb[0:my_i,0:mz_i,mx[Rx]]
 
     MPI.Prequest.Startall([reqSendrhoR, reqRecvrhoR, reqSendrhoL, reqRecvrhoL])
     MPI.Request.Waitall  ([reqSendrhoR, reqRecvrhoR, reqSendrhoL, reqRecvrhoL])
@@ -3596,11 +3766,6 @@ def get_edges_rho_X():
     rho_b[0:my_i,0:mz_i,mx[Rx]+1] = edge_rho_R[i_rho_b,:,:]
     rho_r[0:my_i,0:mz_i,0       ] = edge_rho_L[i_rho_r,:,:]
     rho_b[0:my_i,0:mz_i,0       ] = edge_rho_L[i_rho_b,:,:]
-    if rheology == "archean2":
-        D_ed[0:my_i,0:mz_i,mx[Rx]+1] = edge_rho_R[i_D_ed,:,:]
-        D_eb[0:my_i,0:mz_i,mx[Rx]+1] = edge_rho_R[i_D_eb,:,:]
-        D_ed[0:my_i,0:mz_i,0       ] = edge_rho_L[i_D_ed,:,:]
-        D_eb[0:my_i,0:mz_i,0       ] = edge_rho_L[i_D_eb,:,:]
 
 #-------------------------------------------------------------------------------
 # Kernel to get the Z edges of a domain
@@ -3609,7 +3774,7 @@ def get_edges_rho_X():
 def get_edges_rho_Z():
 
     global i_F_r, i_F_b, i_G
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3641,7 +3806,7 @@ def get_edges_rho_Z():
 def get_edges_rho_Y():
 
     global i_F_r, i_F_b, i_G
-    global i_rho_r, i_rho_b, i_D_ed, i_D_eb
+    global i_rho_r, i_rho_b
     global    aL,    aR,    aU,    aD,    aB,    aF
     global   naL,   naR,   naU,   naD,   naB,   naF
     global edgeL    , edgeR    , edgeU    , edgeD    , edgeB    , edgeF
@@ -3798,7 +3963,6 @@ if rank == 0:
 
 if rank == 0:
     f_bmk = open(bmk_file,"w")       # Open  benchmark file
-    f_bmk.writelines("# it t_My log10Ra dt T_bar Nu Nu_u Nu_d Vrms_nd v_rms_cm_py mach\n")
     f_bmk.close()
     sys.stdout = open(out_file, "w") # Set stdout to output file
     for iout in range(2):
@@ -3872,8 +4036,7 @@ n_TBL                = 3              # Number of Thermal Boundary Layer (TBL) p
 # Physical specifications
 #-------------------------------------------------------------------------------
 
-state                = "solid"
-g_dx_gauge           = False         # Annular g~dx^3 buoyancy gauge (benchmark test_option S); single-phase path only       # State of the fluid for the simulation: "solid" or "magma"
+state                = "solid"       # State of the fluid for the simulation: "solid" or "magma"
 power_correction     = 1.1           # Correction power for mode = "magma" to obtain velocities consitent with studies
 Ra                   = 1.e5          # Rayleigh number: float or "unspecified"
 Pr                   = 2000          # Prandtl number:  float
@@ -3925,20 +4088,25 @@ melt_extraction      = False         # Turm on and off melt
 melt_test_mode       = False         # TEST: zero real M_ext, inject synthetic melt to verify MPI transport
 rho_r_file          = "unspecified"  # RKTLBM first density file
 rho_b_file          = "unspecified"  # RKTLBM second density file
-L_file               = "unspecified"  # 2D lithology IC npy in the run dir (archean2): L field (ny,nz,nx), values 0..1
-L_file               = "unspecified"  # 2D lithology IC npy in the run dir (archean2): L field (ny,nz,nx), values 0..1
 rho1                 = 1.0           # RKTLBM red density 
 rho2                 = 1.0           # RKTLBM blue density
 rho1_p               = 2750          # RKTLBM red physical density
 rho2_p               = 3300          # RKTLBM blue physical density
 rho12                = 0.8           # RKTLBM red/blue physical density
-theta_u              = 90            # 90 degrees on upper surface
-theta_d              = 90            # 90 degrees on lower surface
+theta_u              = 90            # 90 degrees on upper boundary
+theta_d              = 90            # 90 degrees on lower boundary
+theta_l              = 90            # 90 degrees on left  boundary
+theta_r              = 90            # 90 degrees on right boundary
 A                    = 0
 interface_thickness  = 0.75 
+rayleigh_taylor_option = "van-kek"   # Rayleigh Taylor option: van-kek or random
+perturbation_size    = 10            # Rayleigh Taylor random perturbation size for rayleigh_taylor_option = random
+depth_light          = 0.85          # Depth to the light layer start for rayleigh_taylor_option = random
+optimize_nu          = True          # Optimize lattice viscosity for accuracy: True, False
 nu_r_factor          = 1
 beta_g_factor        = 0             # No convection
-g_comp_factor        = 0             # No compositional gravity     
+g_comp_factor        = 1             # No compositional gravity     
+w_diagonal           = 0.3           # Diagonal weight for color gradient (eg. 1, 0.298 or 0.25)
 
 #-------------------------------------------------------------------------------
 # Archean2 parameters needed for TTG melt extract calculations (Requested parameters by TLBM_fast32 and TLBM_fast64)
@@ -3951,9 +4119,6 @@ M3_pd                = 0.50
 M4_pd                = 0.60
 M1_bs                = 0.02
 M2_bs                = 0.04
-TTG_DI_max           = 1e9         # Global cap (%) on cumulative TTG DI; basalt->TTG extraction
-                                   # pauses while DI_bs >= this (2.4 = present-day crust/upper-mantle
-                                   # DI, Gunawardana et al. 2020). 1e9 = no cap.
 M3_bs                = 0.50
 M4_bs                = 0.60
 rho0_pd              = 3300  # Peridotite density
@@ -3963,14 +4128,6 @@ rho_melt_bs          = 2750  # Melt-bearing hydrated basalt
 rho_melt_pd          = 3000  # Melt-bearing peridotite 
 
 DI_bs                = []
-bs_capped            = False
-TTG_LP_frac          = 1.0         # Max share (fraction of DI_bs) the LP window may hold; 1 = off
-TTG_MP_frac          = 1.0         # Max share for the MP window
-TTG_HP_frac          = 1.0         # Max share for the HP window
-fields_every_n_data  = 1           # write npy fields every Nth data event (DI/quota update runs every event)
-lp_gatev             = 1.0         # proportional window gates (1 = fully open)
-mp_gatev             = 1.0
-hp_gatev             = 1.0
 DI_bs_LP             = []
 DI_bs_MP             = []
 DI_bs_HP             = []
@@ -4037,6 +4194,7 @@ output_timing        = True        # Output performance & timing
 #-------------------------------------------------------------------------------
 
 Inc_plots            = "10000"     # Plot increment
+Inc_bmk              = "10000"     # Benchmark increment
 Inc_data             = "10000"     # Data increment
 Inc_timing           = "50000"     # Timing increment
 Inc_mach             = "1000"      # Mach number print/check increment
@@ -4075,8 +4233,6 @@ plot_ce_LP           = False       # Cumulative extracted LP TTG
 plot_ce_MP           = False       # Cumulative extracted MP TTG
 plot_ce_HP           = False       # Cumulative extracted HP TTG
 plot_ce_pd           = False       # Cumulative extracted peridotite
-plot_de_pd           = False       # Advected depletion field D_ed (peridotite)
-plot_de_bs           = False       # Advected depletion field D_eb (basalt)
 plot_ce_bs           = False       # Cumulative extracted peridotite
 plot_T_sol_pd        = False       # T_solidus peridotite
 plot_T_sol_bs        = False       # T_solidus basalt 
@@ -4163,14 +4319,17 @@ from utilities import timevalue_to_timesteps
 from utilities import timetext
 from utilities import timevalue
 from utilities import timevalue_to_secs
+from utilities import timesteps_to_time_text
+from utilities import time_to_physical_time_text 
 from utilities import timesteps_to_physical_time_text
-from utilities import time_to_physical_time_text
 from utilities import get_plane
 from utilities import get_lattice_viscosity
 from utilities import convert_units
 from utilities import get_u_convert
 from utilities import get_annular_geometry
 from utilities import get_R_and_L
+from utilities import secs_to_float_time_timescale
+from utilities import timesteps_to_time_text
 
 #-------------------------------------------------------------------------------
 # Check for any invalid specifications
@@ -4187,6 +4346,7 @@ Inc_plots    , timescale_Inc_plots    , error = timevalue("Inc_plots"    ,Inc_pl
 Inc_data     , timescale_Inc_data     , error = timevalue("Inc_data"     ,Inc_data     ,error,rank)
 Inc_mach     , timescale_Inc_mach     , error = timevalue("Inc_mach"     ,Inc_mach     ,error,rank)
 Inc_timing   , timescale_Inc_timing   , error = timevalue("Inc_timing"   ,Inc_timing   ,error,rank)
+Inc_bmk      , timescale_Inc_bmk      , error = timevalue("Inc_bmk"      ,Inc_bmk      ,error,rank)
 
 if error: fatal_input_error = True
 
@@ -4235,8 +4395,8 @@ for iout in range(2):
         if rank == 0: print('ERROR: temperature can only be reynolds or arrhenius or unspecified',file=output_print,flush=True)
         fatal_input_error = True
 
-    if not (rheology == "linear" or rheology == "archean" or rheology == "archean2"):
-        if rank == 0: print('ERROR: rheology can only be linear, archean or archean2',file=output_print,flush=True)
+    if not (rheology == "linear" or rheology == "archean" or rheology == "archean2" or rheology == "van-keken-miscible"):
+        if rank == 0: print('ERROR: rheology can only be linear, archean or archean2 or van-keken-miscible',file=output_print,flush=True)
         fatal_input_error = True
 
     if (time_per_timestep == "unspecified" and g_l == "unspecified" and nu_l == "unspecified"):
@@ -4358,7 +4518,7 @@ TLBM_fast = CDLL('./TLBM_fast.so')
 #  rho,eta,u, \
 #  f_last,f,g_last,g, \
 #  x_xa,y_ya,z_za, \
-#  nu_f, tau_g, tau_h, BETA_G, \
+#  nu_f, tau_g, tau_h, beta_g, \
 #  Temperature, Rheology, Nu_formula, \
 #  nu_l_min, gamma_T, Tau_y, N, Delta_g, \
 #  nu_f_last, tau_f_last, nu_total, \
@@ -4394,7 +4554,7 @@ TLBM_fast_argtypes = [ \
     array_3d_float, array_3d_float, array_4d_float, \
     array_4d_float, array_4d_float, array_4d_float, array_4d_float, \
     array_2d_int, array_2d_int, array_2d_int, \
-    array_1d_float, array_1d_float, array_1d_float, array_1d_float, \
+    array_1d_float, array_1d_float, array_1d_float, C_FLOAT, \
     c_char_p, c_char_p, c_char_p, \
     C_FLOAT, C_FLOAT, C_FLOAT, C_FLOAT, array_1d_float, array_1d_float, array_1d_float, \
     array_3d_float, array_3d_float, array_3d_float, \
@@ -4456,14 +4616,13 @@ RKTLBM_fast_strmac_argtypes = [ \
     array_4d_float, array_4d_float,\
     c_char_p,\
     array_4d_float, array_4d_float,\
-    array_4d_float, array_4d_float,\
-    array_4d_float, array_4d_float,\
     c_bool, c_int, c_int, c_int, array_1d_int, array_1d_int, \
     c_bool, c_int, c_int, c_int, array_1d_int, array_1d_int, \
     c_bool, c_int, c_int, c_int, array_1d_int, array_1d_int, \
     c_bool, c_int, c_int, c_int, array_1d_int, array_1d_int, \
     c_bool, c_int, c_int, c_int, array_1d_int, array_1d_int, \
     c_bool, c_int, c_int, c_int, array_1d_int, array_1d_int, \
+    C_FLOAT, C_FLOAT, C_FLOAT, C_FLOAT, \
     C_FLOAT, C_FLOAT, C_FLOAT, C_FLOAT, \
     c_bool, \
     array_3d_float, array_3d_float, \
@@ -4490,13 +4649,14 @@ RKTLBM_fast_strmac_argtypes = [ \
 #  FF, \
 #  A, B, interface_thickness, g_comp, \
 #  BC_r_wetting_u, BC_b_wetting_u, BC_r_wetting_d, BC_b_wetting_d, \
+#  BC_r_wetting_l, BC_b_wetting_l, BC_r_wetting_r, BC_b_wetting_r, \
 #  Rheology, Temperature, nu_formula\
 #  tau_h, \
 #  nu_f_r, nu_f_b, nu_star\
 #  nu_l_min, gamma_T, Tau_y, N, Delta_g, \ 
 #  nu_f_last, tau_f_last, \
 #  T_nd, \
-#  act_E, act_V, Delta_eta_array, eta_p_input, DR_2, T0_p, dT_p, z_nd, \
+#  act_E, act_V, Delta_eta_array, eta_p, DR_2, T0_p, dT_p, z_nd, \
 #  h, L_ed, \
 #  P0, cumulative_extracted_pd, cumulative_extracted_bs, \
 #  cumulative_extracted_LP, cumulative_extracted_MP, cumulative_extracted_HP, \
@@ -4537,6 +4697,7 @@ RKTLBM_fast_rest_argtypes = [ \
     array_4d_float,\
     C_FLOAT, array_1d_float, C_FLOAT, C_FLOAT,\
     C_FLOAT, C_FLOAT, C_FLOAT, C_FLOAT, \
+    C_FLOAT, C_FLOAT, C_FLOAT, C_FLOAT, \
     c_char_p,c_char_p, c_char_p,\
     array_1d_float, \
     array_1d_float, array_1d_float, C_FLOAT,\
@@ -4544,8 +4705,6 @@ RKTLBM_fast_rest_argtypes = [ \
     array_3d_float, array_3d_float, \
     array_3d_float, \
     array_1d_float, array_1d_float, array_1d_float, C_FLOAT, C_FLOAT, C_FLOAT, C_FLOAT, array_3d_float, \
-    array_4d_float, array_3d_float, \
-    array_4d_float, array_3d_float, \
     array_4d_float, array_3d_float, \
     array_3d_float, array_3d_float, array_3d_float, \
     array_3d_float, array_3d_float, array_3d_float, \
@@ -4568,8 +4727,7 @@ RKTLBM_fast_rest_argtypes = [ \
     array_2d_float, array_2d_float,\
     c_bool, \
     array_3d_float, array_3d_float, \
-    c_int,\
-    C_FLOAT, C_FLOAT, C_FLOAT\
+    c_int\
 ]
 
 if   float_bits == 32:
@@ -4778,6 +4936,8 @@ elif geometry == "spherical" and D == 3:
 else:
     R_p,L_p = get_R_and_L(R_p,L_p) # Get R_p and L_p from descriptive names if needed
     L_l     = nz-1
+    radii = np.linspace(R_p,R_p-L_p,nz,dtype=np_float)
+    dx    = np.ones(nz,dtype=np_float) 
 
 dx_p     = L_p/L_l      # Size of lattice,      m
 
@@ -4813,12 +4973,50 @@ for i in range(len(coordinates)):
 
 time_per_timestep_input = time_per_timestep
 time_per_timestep_int, timescale_time_per_timestep, error = timevalue("time_per_timestep",time_per_timestep,error,rank)
+time_per_timestep_input
 time_per_timestep = timevalue_to_secs(time_per_timestep_int,timescale_time_per_timestep,rank)
 
 eta_p_input = eta_p; nu_l_input = nu_l ; g_l_input = g_l
-Ra_p, Pr_p, eta_p, nu_p, ka_p, Ra_l, Pr_l, g_l, nu_l, ka_l, dx_p, dt_p, dt_dt0 = get_lattice_viscosity(state, power_correction,Ra,Pr,g_p,beta_p,dT_p,L_p,eta_p,rho_p,ka_p,Tau_y0_p,D,g_l,L_l,nu_l,nu_l_min,time_per_timestep,gamma_T,rheology,rank)
+Ra_p, Pr_p, eta_p, nu_p, ka_p, Ra_l, Pr_l, g_l, nu_l, ka_l, dx_p, dt_p, dt_dt0 = get_lattice_viscosity(state, power_correction,Ra,Pr,g_p,beta_p,dT_p,L_p,eta_p,rho_p,ka_p,Tau_y0_p,D,g_l,L_l,nu_l,nu_l_min,time_per_timestep_input,gamma_T,rheology,rank)
 
-eta_p_input = np_float(eta_p_input)
+# ooooooooooqqqqqqqqqqqqqq
+# Test whether it is possible to optimize accuracy by revising nu to be optimal
+
+nu_l_ideal = 0.5/3
+if optimize_nu and nu_l > nu_l_ideal:
+    nt0 = timevalue_to_timesteps(nt,timescale_nt,dt_p,rank)
+    factor = nu_l_ideal/nu_l
+    nu_l0 = nu_l
+    ka_l0 = ka_l
+    g_l0  = g_l
+    nu_l  *= factor
+    ka_l  *= factor
+    g_l   *= factor
+    if rank == 0:
+        dt_p_aiig = nu_p*g_l/(nu_l*g_p*dx_p)
+        dt_p_diff = L_p**2*ka_l/(L_l**2*ka_p)
+        C_l = beta_p*dT_p
+        Ra_l      = g_l*C_l*L_l**3*Pr_l/nu_l**2
+#            ka_l = dt_p*L_l**2*ka_p/L_p**2
+#            nu_l = ka_l*Pr_l
+#            g_l  = nu_l**2*Ra_l/(C_l*L_l**3*Pr_l)
+        print("====================================================",flush=True)
+        print("Updated as follows",flush=True)
+        print("====================================================",flush=True)
+        print("    factor = %8.3g" %(factor),flush=True)
+        print("----------------------------------------------------",flush=True)
+        print("    nu_l   = %8.3g -> %8.3g" %(nu_l0,nu_l),flush=True)
+        print("    ka_l   = %8.3g -> %8.3g" %(ka_l0,ka_l),flush=True)
+        print("    g_l    = %8.3g -> %8.3g" %(g_l0,g_l),flush=True)
+        print("----------------------------------------------------",flush=True)
+        print("    dx_p       = %8.3g" %(dx_p),flush=True)
+        print("----------------------------------------------------",flush=True)
+        print("    dt_p       = %8.3g yrs" %(dt_p/sec_y),flush=True)
+        print("    dt_p_aiig  = %8.3g yrs" %(dt_p_aiig/sec_y),flush=True)
+        print("----------------------------------------------------",flush=True)
+        print("    t_p        = %8.3g My" %((nt0-1)*dt_p/sec_my),flush=True)
+        print("====================================================",flush=True)
+
 # Initialize the viscosities for distributions f and g
 
 nu_f0        = nu_l
@@ -4886,19 +5084,31 @@ else:
 nu_l_min_cap = np_float((eta_min_p / rho_p) / _nu_unit)
 nu_l_max_cap = np_float((eta_max_p / rho_p) / _nu_unit)
 
-# theta < 0 selects neutral (zero-gradient) wall ghosts for rho_r/rho_b:
-# the ghost keeps the adjacent cell's red/blue split instead of imposing a
-# fixed wetting fraction, which otherwise pumps color at free surfaces.
-BC_r_wetting_u = np_float(-1.0 if theta_u < 0 else (1+np.cos(np.pi*theta_u/180))/2)
-BC_b_wetting_u = np_float(-1.0 if theta_u < 0 else (1-np.cos(np.pi*theta_u/180))/2)
-BC_r_wetting_d = np_float(-1.0 if theta_d < 0 else (1+np.cos(np.pi*theta_d/180))/2)
-BC_b_wetting_d = np_float(-1.0 if theta_d < 0 else (1-np.cos(np.pi*theta_d/180))/2)
+BC_r_wetting_u = np_float((1+np.cos(np.pi*theta_u/180))/2)
+BC_b_wetting_u = np_float((1-np.cos(np.pi*theta_u/180))/2)
+BC_r_wetting_d = np_float((1+np.cos(np.pi*theta_d/180))/2)
+BC_b_wetting_d = np_float((1-np.cos(np.pi*theta_d/180))/2)
+
+BC_r_wetting_l = np_float((1+np.cos(np.pi*theta_l/180))/2)
+BC_b_wetting_l = np_float((1-np.cos(np.pi*theta_l/180))/2)
+BC_r_wetting_r = np_float((1+np.cos(np.pi*theta_r/180))/2)
+BC_b_wetting_r = np_float((1-np.cos(np.pi*theta_r/180))/2)
 
 #==========================================================================
 # Print the run specifications
 #==========================================================================
 
 nt_timesteps = timevalue_to_timesteps(nt,timescale_nt,dt_p,rank)
+
+# Ensure all values are at the correct precision
+
+nu_f0  = np_float(nu_f0)    ; tau_f0   = np_float(tau_f0)
+nu_g0  = np_float(nu_g0)    ; tau_g0   = np_float(tau_g0)
+tau_h0 = np_float(tau_h0)
+
+if RKTLBM:
+   nu_f0_r   = np_float(nu_f0_r)  ; tau_f0_r = np_float(tau_f0_r)
+   nu_f0_b   = np_float(nu_f0_b)  ; tau_f0_b = np_float(tau_f0_b)
 
 if rank == 0:
     print("==================================================================",flush=True)
@@ -4945,10 +5155,8 @@ if rank == 0:
     print("Temperature profile file     = ", T_z_file,flush=True)
     print("Pressure profile file        = ", P_z_file,flush=True)
     print("Lithology profile file       = ", L_z_file,flush=True)
-    if eta_p_input == "unspecified":
-        print("eta_p                        = ",eta_p_input,flush=True)
-    else:
-        print("eta_p       (kg/(m.s))       = %8.3g" %(eta_p_input),flush=True)
+    print("eta_p_input                  = ",eta_p_input,flush=True)
+    print("eta_p       (kg/(m.s))       = %8.3g" %(eta_p),flush=True)
     print("eta_min_p   (Pa.s)           = %8.3g" %(eta_min_p),flush=True)
     print("eta_max_p   (Pa.s)           = %8.3g" %(eta_max_p),flush=True)
     print("act_E_1     (J/mol)          = %8.3g" %(act_E_1),flush=True)
@@ -4999,11 +5207,32 @@ if rank == 0:
     print("nu_r_factor                  = ",nu_r_factor,flush=True)
     print("theta_u                      = ",theta_u)
     print("theta_d                      = ",theta_d)
+    print("theta_l                      = ",theta_l)
+    print("theta_r                      = ",theta_r)
+    if RKTLBM:      
+       print("beta_g_factor                = %8.3g" %(beta_g_factor),flush=True)
+       print("g_comp_factor                = %8.3g" %(g_comp_factor),flush=True)
+       print("w_diagonal                   = %8.3g" %(w_diagonal),flush=True)  
+       print("beta_g                       = %8.3g" %(beta_g),flush=True)
+       print("melt_time                    = ",melt_time,flush=True)
+       print("melt_position                = ",melt_position,flush=True)
+       print("melt_extraction              = ",melt_extraction,flush=True)
+       print("rayleigh_taylor_option       = ",rayleigh_taylor_option,flush=True)
+       print("depth_light                  = ",depth_light,flush=True)
+       print("perturbation_size            = ",perturbation_size,flush=True)
+       print("optimize_nu                  = ",optimize_nu,flush=True)
+    print("rho1_p     (kg/m^3) (TTG)    = %8.3g" %(rho1_p),flush=True)
+    print("rho2_p     (kg/m^3) (perido) = %8.3g" %(rho2_p),flush=True)
+    print("rho3_p     (kg/m^3) (basalt) = %8.3g" %(rho3_p),flush=True)
     print("basalt_depth_p  (m)          = %8.3g" %(basalt_depth_p),flush=True)
     print("BC_r_wetting_u               = ",BC_r_wetting_u,flush=True)
     print("BC_r_wetting_d               = ",BC_r_wetting_d,flush=True)
     print("BC_b_wetting_u               = ",BC_b_wetting_u,flush=True)
     print("BC_b_wetting_d               = ",BC_b_wetting_d,flush=True)
+    print("BC_r_wetting_l               = ",BC_r_wetting_l,flush=True)
+    print("BC_r_wetting_r               = ",BC_r_wetting_r,flush=True)
+    print("BC_b_wetting_l               = ",BC_b_wetting_l,flush=True)
+    print("BC_b_wetting_r               = ",BC_b_wetting_r,flush=True)
     if RKTLBM:
        print("g_comp_factor                = %8.3g" %(g_comp_factor),flush=True)
        print("beta_g_factor                = %8.3g" %(beta_g_factor),flush=True)
@@ -5062,7 +5291,7 @@ if rank == 0:
     print("------------------------------------------------------------------",flush=True)
     print("dx_p = L_p/L_l (m)           = %8.3g" %(dx_p),flush=True)
     print("dt_p           (s)           = %8.3g" %(dt_p),flush=True)
-    print("                             = %s" %(time_to_physical_time_text(dt_p)),flush=True)
+    print("                             = %s" %(time_to_physical_time_text(dt_p,dt_p)),flush=True)
     print("==================================================================",flush=True)
     print("Checks of TLBM values being used",flush=True)
     print("==================================================================",flush=True)
@@ -5092,6 +5321,7 @@ if rank == 0:
     print("Output increment specifications",flush=True)
     print("------------------------------------------------------------------",flush=True)
     print("Inc_plots                    = %d %s" %(Inc_plots ,timescale_Inc_plots) ,flush=True)
+    print("Inc_bmk                      = %d %s" %(Inc_bmk ,timescale_Inc_bmk) ,flush=True)
     print("Inc_data                     = %d %s" %(Inc_data  ,timescale_Inc_data)  ,flush=True)
     print("Inc_mach                     = %d %s" %(Inc_mach  ,timescale_Inc_mach)  ,flush=True)
     print("Inc_timing                   = %d %s" %(Inc_timing,timescale_Inc_timing),flush=True)
@@ -5312,13 +5542,7 @@ if code == "c":
       # Archean2 arrays
       h              = np.zeros((ny_i,nz_i,na,nx_i),dtype=np_float)  # Lithology density distribution
       h_last         = np.zeros((ny_i,nz_i,na,nx_i),dtype=np_float)  # Lithology density distribution
-      hd             = np.zeros((ny_i,nz_i,na,nx_i),dtype=np_float)  # Advected depletion distribution (peridotite)
-      hd_last        = np.zeros((ny_i,nz_i,na,nx_i),dtype=np_float)  # Advected depletion distribution (peridotite)
-      hb             = np.zeros((ny_i,nz_i,na,nx_i),dtype=np_float)  # Advected depletion distribution (basalt)
-      hb_last        = np.zeros((ny_i,nz_i,na,nx_i),dtype=np_float)  # Advected depletion distribution (basalt)
       L_ed                    = np.zeros((ny_i,nz_i,nx_i),dtype=np_float)
-      D_ed                    = np.zeros((ny_i,nz_i,nx_i),dtype=np_float)
-      D_eb                    = np.zeros((ny_i,nz_i,nx_i),dtype=np_float)
       T_nd                    = np.ones((ny_i,nz_i,nx_i),dtype=np_float)
       z_nd                    = np.ones((ny_i,nz_i,nx_i),dtype=np_float) 
       M_ext_pd                = np.zeros((ny_i,nz_i,nx_i),dtype=np_float)
@@ -5489,6 +5713,7 @@ elif nu_formula == "strain_rate": Nu_formula = b"strain_rate"
 if   rheology == "linear":   Rheology = b"linear"
 elif rheology == "archean":  Rheology = b"archean"
 elif rheology == "archean2": Rheology = b"archean2"
+elif rheology == "van-keken-miscible": Rheology = b"van-keken-miscible"
 
 # Normalize melt_position: strip whitespace and lowercase before matching.
 # Otherwise a stray space in the .in file (e.g. "insitu ") leaves
@@ -5603,7 +5828,7 @@ if rank < nr:
                 T_z[z] = T_upper + gradient_z * (T_lower * 0.70 - T_upper)
           T_z[z_upper]  = T_upper
           T_z[z_lower]  = T_lower
-          # T_z[z_lower] *= 1.5   # disabled 2026-11-16 (Amen): CMB = nominal T_lower = 3415 C
+          T_z[z_lower] *= 1.5
           # Pressure/Density for arrhenius equation
           rho_z    = rho_p * np.ones(nz,dtype=np_float)
           L_z      = np.zeros(nz,dtype=np_float)
@@ -5644,7 +5869,48 @@ if rank < nr:
     if RKTLBM :   
            RHO_r = np.zeros((ny,nz,nx),dtype=np_float)
            RHO_b = np.ones((ny,nz,nx),dtype=np_float)
-           if rho_r_file == "fallingbox" or rho_b_file == "fallingbox":
+           if rho_r_file == "rayleigh-taylor" or rho_b_file == "rayleigh-taylor":
+              if rayleigh_taylor_option == "van-kek":
+                  x_rt = np.linspace(0,1,nx)
+                  y_rt = 0.2 + 0.02*np.cos(np.pi*x_rt)
+                  for y in range(ny):
+                      for z in range(nz):
+                          for x in range(nx):
+                              if (nz-1-z)/(nz-1) < y_rt[x]:
+                                  RHO_r[y,z,x] = 1.0
+                                  RHO_b[y,z,x] = 0.0
+                              else:
+                                  RHO_r[y,z,x] = 0.0
+                                  RHO_b[y,z,x] = 1.0
+                  if rheology == "van-keken-miscible":
+                      x0 = 3*(nx-1)//4
+                      z0 = (nz-1)//4
+                      r0 = nx//10
+                      L_ED = np.zeros((ny,nz,nx),dtype=np_float)
+                      for y in range(ny):
+                          for z in range(nz):
+                              for x in range(nx):
+                                  r = np.sqrt((x-x0)**2+(z-z0)**2)
+                                  if r < r0:
+#                                      if rank == 0: print("L_ED(x,z) = L_ED(%d,%d) = 1 has been initialized" %(x,z),flush=True)
+                                      L_ED[y,z,x] = 1.0
+                      L_ed = put_field(L_ED,default=0)
+                      print_field_range("L_ed",L_ed)
+              elif rayleigh_taylor_option == "random":
+                  fraction_heavy = depth_light
+                  depth_heavy  = int(fraction_heavy*(nz-1))
+                  if rank == 0:
+                      print()
+                      print("Depth heavy layer = %5.3f x nz = %d +/- %d" %(fraction_heavy,depth_heavy,perturbation_size),flush=True)
+                  for y in range(ny):
+                      for z in range(nz):
+                          for x in range(nx):
+                              RHO_r[y,z,x] = 0.0
+                              RHO_b[y,z,x] = 1.0
+                              if z >= depth_heavy + np.random.normal(0.0,perturbation_size):
+                                  RHO_r[y,z,x] = 1.0
+                                  RHO_b[y,z,x] = 0.0
+           elif rho_r_file == "fallingbox" or rho_b_file == "fallingbox":
               width_block  = nx//8
               height_block = nz//8
               top_block    = nz//8-height_block//8
@@ -5705,7 +5971,7 @@ if rank < nr:
                    T_z[z] = T_upper + (z / lith_z) * (T_lower * 0.70 - T_upper)
            T_z[z_upper]  = T_upper
            T_z[z_lower]  = T_lower
-           # T_z[z_lower] *= 1.5   # disabled 2026-11-16 (Amen): CMB = nominal T_lower = 3415 C
+           T_z[z_lower] *= 1.5
 
            rho_z    = rho2_p * np.ones(nz, dtype=np_float)
            L_z      = np.zeros(nz, dtype=np_float)
@@ -5733,7 +5999,7 @@ if rank < nr:
                   T_z[z] = T_upper + gradient_z * (T_lower * 0.70 - T_upper)
            T_z[z_upper]  = T_upper
            T_z[z_lower]  = T_lower
-           # T_z[z_lower] *= 1.5   # disabled 2026-11-16 (Amen): CMB = nominal T_lower = 3415 C
+           T_z[z_lower] *= 1.5
 
            rho_z = rho_p * np.ones(nz,dtype=np_float)
            L_ED   = np.zeros((ny,nz,nx),dtype=np_float)
@@ -5760,6 +6026,7 @@ if rank < nr:
            rho_M      = put_field_z_2_xyz(rho_z,default=1)
            T_nd       = T_z
            T_nd       = put_field_z_2_xyz(np_float(T_nd))
+
 
         elif T_z_file != "unspecified" and rho_z_file == "unspecified":
              T_z_file = run_dir + T_z_file   + ".npy"
@@ -5802,12 +6069,7 @@ if rank < nr:
     z               = put_field_z_2_xyz(np_float(z_1d))
     z_nd            = put_field_z_2_xyz(np_float(z_nd))
     mask_pd         = np.where(z >  2e5 ,1,0).astype(bool)
-    # Basalt -> TTG wherever the Moyen/Jain P-T windows permit (LP < 1 GPa,
-    # MP 1-2.2 GPa, HP 2.35-5 GPa). The former 70 km floor was a band-aid for
-    # the melt-factory runaway, which is now fixed properly (TVD depletion
-    # transport, conservative budgets, exact population L source); it made the
-    # run HP-only, contradicting the paper's Moyen 20/60/20 framing.
-    mask_bs         = np.ones_like(z).astype(bool) 
+    mask_bs         = np.where(z <= 1e5 ,1,0).astype(bool) 
     # Mantle Viscosity Profile (Arrhenius Equation) based on Jain et al. (2019)
     act_E           = np.zeros((nz),dtype=np_float)
     V_array         = np.zeros((nz),dtype=np_float)
@@ -5871,26 +6133,6 @@ if rank < nr:
             print(f"ERROR: T_z must be 1D (depth profile) or 3D (full field); got ndim={T_z.ndim}",
                   file=sys.stderr, flush=True)
         exit()
-#   Cap the initial temperature at the peridotite solidus minus a margin so a
-#   melt run does not start with a pre-molten deep layer. Wall rows keep their
-#   BC values and a thin basal boundary layer remelts self-consistently.
-    if rheology == "archean2" and melt_extraction:
-        T_sol_init = np.where(P_z < 13.0, -5.1*P_z**2 + 133*P_z + 1120.85,
-                              2045.0*(1.0 + P_z/92.0)**(1/1.3) - 273.15).astype(np_float)
-        # The stored T field is offset from the melt module temperature by
-        # T0_p + dT_p/2, so the cap must be expressed in the stored scale.
-        _T_offset = T0_p + dT_p/2
-        T_xyz[:,1:nz-1,:] = np.minimum(T_xyz[:,1:nz-1,:],
-                                       (T_sol_init - 50.0 - _T_offset)[np.newaxis,1:nz-1,np.newaxis])
-        # Conductive-lid cap: initial T limited to 10 K/km near the surface so
-        # the initial crust starts below the 760 C TTG window floor (no t=0
-        # conversion burst); deeper rows are unaffected (lid cap >> profile).
-        _T_lid = 10.0 * z_km.astype(np_float)
-        T_xyz[:,1:nz-1,:] = np.minimum(T_xyz[:,1:nz-1,:],
-                                       (_T_lid - _T_offset)[np.newaxis,1:nz-1,np.newaxis])
-        if rank == 0:
-            print("Initial T capped at peridotite solidus - 50 K below the surface rows",flush=True)
-
     eta  = put_field(T_xyz, default=0)
     del T_xyz
 
@@ -5928,32 +6170,12 @@ if rank < nr:
         power_sinusoid   = 10
         sinusoidal_fluct = np.sign(sinusoidal_fluct)*sinusoidal_fluct**power_sinusoid
         dT_sinusoid[xedge:xedge+nxi] = cell_amplitude*np.cos(2*np.pi*x_sinusoid*initialize_ncells/nx+dtheta)
-        if boundary_u: eta[:,zu,xedge:xedge+nxi] += dT_sinusoid[xedge:xedge+nxi]
-        if boundary_d: eta[:,zd,xedge:xedge+nxi] += dT_sinusoid[xedge:xedge+nxi]
+        if boundary_u: eta[:,:,xedge:xedge+nxi] += dT_sinusoid[xedge:xedge+nxi]
+        if boundary_d: eta[:,:,xedge:xedge+nxi] += dT_sinusoid[xedge:xedge+nxi]
         del dT_sinusoid
 
 #   Set eta_u and eta_d which are used to impose the
 #   thermal BC on the upper and lower boundaries
-
-#   Optional 2D lithology IC from file (mirrors rho_r_file): L_file = <name>
-#   loads run_dir/<name>.npy with shape (ny,nz,nx), values in [0,1]; archean2 only.
-    if L_file != "unspecified":
-        if rheology == "archean2":
-            _L_path = run_dir + L_file + ".npy"
-            L_ed    = put_field(np_float(np.load(_L_path)))
-            if rank == 0: print("Loaded 2D lithology IC from %s" % (_L_path), flush=True)
-        elif rank == 0:
-            print("L_file specified but rheology != archean2: IGNORED", flush=True)
-
-#   Optional 2D lithology IC from file (mirrors rho_r_file): L_file = <name>
-#   loads run_dir/<name>.npy with shape (ny,nz,nx), values in [0,1]; archean2 only.
-    if L_file != "unspecified":
-        if rheology == "archean2":
-            _L_path = run_dir + L_file + ".npy"
-            L_ed    = put_field(np_float(np.load(_L_path)))
-            if rank == 0: print("Loaded 2D lithology IC from %s" % (_L_path), flush=True)
-        elif rank == 0:
-            print("L_file specified but rheology != archean2: IGNORED", flush=True)
 
     if boundary_u: eta_u[:,:] = eta[:,zu,:]
     if boundary_d: eta_d[:,:] = eta[:,zd,:]
@@ -6024,20 +6246,6 @@ if rank < nr:
 
     del NU_F, NU_G
 
-#   g ~ dx^3 annular gauge (benchmark test_option S): per-row Boussinesq factor
-    BETA_G_NZ = beta_g * np.ones(nz, dtype=np_float)
-    if g_dx_gauge and geometry == "annular":
-        BETA_G_NZ = np_float(BETA_G_NZ * (radii/radii[0])**3)
-        if rank == 0:
-            print("g_dx_gauge ACTIVE: beta_g scaled by (dx(z)/dx(0))^3, surface %.4g -> base %.4g" % (BETA_G_NZ[0], BETA_G_NZ[-1]), flush=True)
-    elif g_dx_gauge:
-        if rank == 0: print("g_dx_gauge requested but geometry != annular: IGNORED", flush=True)
-    if code == "c":
-        BETA_G = put_field_z_2_z(BETA_G_NZ, default=beta_g)
-    else:
-        BETA_G = np_float(BETA_G_NZ + 0)
-
-
     if rank == 0: print(" %4.2f secs" %(time.time()-t0),flush=True)
 
 #--------------------------------------------------------------
@@ -6072,8 +6280,8 @@ if rank < nr:
        if rank == 0:
           print() 
           print("TAU physical from input file")
-       for z in range(nz):
-           TAU_Y[z] = (Tau_y0_p + (z * dx_p) * Tau_yi_p)
+          for z in range(nz):
+              TAU_Y[z] = (Tau_y0_p + (z * dx_p) * Tau_yi_p)
             # print(f"tau physical at depth {z} is TAU_Y[z] = {Tau_y0_p + (z * dx_p) * Tau_yi_p:.2e}", flush=True) 
 
 #       Convert TAU_Y from physical to lattice units which uses the following:
@@ -6276,17 +6484,7 @@ dT_limit_to_exit = 10*dT_max
 
 factor        = 1                    # Initial factor for timestep
 factor_max    = factor_max_vary_dt   # Max timestep factor
-# Adaptive dt floor. Cutting dt rescales nu_g toward zero numerical
-# diffusivity and the thermal AD field destabilizes once nu_g*factor drops
-# below ~1e-5 lattice (M1_hd_smC blew up at nu_g*factor ~ 8e-6, held at
-# 1.7e-5). A hard floor of 1.0 is safe but forbids the controller from
-# arresting fast basal jets (M1_hpc: mach crept to 0.21 at the floor and the
-# lattice nan-ed at 110 My). Allow cuts down to the thermal margin, never
-# below 0.2 of base.
-factor_min    = max(0.1, 2.5e-5/max(float(nu_g0), 1.0e-30))  # 2x margin: smH blew at nu_g*dt=1.1e-5
-factor_min    = min(factor_min, 1.0) # never ABOVE base either
-if rank == 0:
-    print("vary-dt floor: factor_min = %6.3f (thermal-margin adaptive)" % factor_min, flush=True)
+factor_min    = 1/factor_max_vary_dt # Min timestep factor
 
 # Do not vary dt if factor_max_vary_dt is 1 or less
 if abs(factor_max_vary_dt - 1) < 1.e-3: start_vary_dt = nt
@@ -6301,6 +6499,25 @@ it_mach_max_run = 0                  # Time step of max mach for run
 mach_max_sum    = 0                  # Sum       of   max mach for run
 n_mach_max_sum  = 0                  # Number    of   max mach summed (to compute average)
 mach_max_ave    = 0                  # Average   of   max mach for run
+
+# Set default output Increments if necessary oooooooooooo Allow Inc's to be set as a time or via the number of files to generate in the run
+
+n_bmk                        = 1000          # 1 K benchmark file lines sifficient for scaling averages and to plot time series
+n_plots                      = 50            # Fifty plots sufficient for plot checks & to make movies
+n_data                       = n_plots       # Fifty plots sufficient for data analysis
+n_mach                       = n_plots*5     # Five machs prints per data/plot output sufficient for mach checks
+n_performance                = 10            # Ten  performance prints sufficient to evaluate performance
+i_performance                = 0             # Number  of performance prints done
+
+n_performance_initial        = 6             # Number  of initial performance prints to do
+secs_performance_initial     = 10            # Seconds to first initial performance print
+secs_inc_performance_initial = 120           # Seconds increment between     initial performance prints
+
+Inc_bmk_float         = nt/n_bmk
+Inc_plots_float       = nt/n_plots
+Inc_data_float        = nt/n_data
+Inc_mach_float        = nt/n_mach
+Inc_mach_check_float  = 1000       # Check mach frequently for accuracy & stability
 
 #=======================================================================================
 # Start of time loop to do TLBM calculations
@@ -6337,54 +6554,22 @@ if rank == 0:
 # mass each timestep (saved value re-imposed on top of mass that
 # already streamed into interior cells -> exponential growth of rho_r).
 
+n_plots         = 0                  # Number of plots plotted
+n_data          = 0                  # Number of data files saved
+n_mach          = 0                  # Number of mach prints
+n_mach_check    = 0                  # Number of mach checks
+n_bmk           = 0                  # Number of bmk  lines saved
+n_performance   = 0                  # Number of performance printouts
 
-# def _dbg_redsum(tag):
-#     _R = get_field(rho_r)
-#     if rank == 0:
-#         print("DBGRED %-6s it=%d sum_r=%.9e" % (tag, it, float(np.sum(_R, dtype=np.float64))), flush=True)
+# Set values to keep track of the maximumum mach of the run and average
+
+n_mach_sum      = 0
+mach_sum        = 0
+mach_max_run    = 0
 
 while int(t-dt) <= nt:
 
-#   With variable dt, t and dt must be bitwise identical on every rank: it is
-#   derived from int(t*dt_dt0), a knife-edge truncation, and a sub-ULP per-rank
-#   difference makes ranks take different Inc_* branches, which deadlocks the
-#   collectives inside them (M1_hd_smC hung twice this way). Broadcast the two
-#   scalars from rank 0 once per step; the cost is microseconds.
-    _tdt = comm.bcast((t, dt), root=0)
-    t, dt = _tdt
-
-#   Global TTG budget: while the cumulative TTG DI (rank 0's latest growth
-#   diagnostic) is at or above TTG_DI_max, basalt->TTG extraction is paused by
-#   making the melt-window trigger M2_bs unreachable. Re-enables automatically
-#   if DI falls back below the cap.
-    if rank == 0:
-        _cap_state = (len(DI_bs) > 0 and DI_bs[-1] >= TTG_DI_max)
-        _tot = DI_bs[-1] if len(DI_bs) > 0 else 0.0
-        if _tot > 0.05 and len(DI_bs_LP) > 0:
-            _gates = []
-            for _sh, _tgt in ((DI_bs_LP[-1]/_tot, TTG_LP_frac),
-                              (DI_bs_MP[-1]/_tot, TTG_MP_frac),
-                              (DI_bs_HP[-1]/_tot, TTG_HP_frac)):
-                _gates.append(1.0 if _sh <= _tgt else 0.0)   # hard quota: threshold-driven extraction defeats fractional gates
-        else:
-            _gates = [1.0, 1.0, 1.0]
-        _caps = (_cap_state, _gates[0], _gates[1], _gates[2])
-    else:
-        _caps = None
-    _caps = comm.bcast(_caps, root=0)
-    if rank == 0:
-        if _caps[0] and not bs_capped:
-            print("TTG cap engaged: DI_bs = %.4f %% >= TTG_DI_max = %.4f %% - basalt extraction paused" % (DI_bs[-1], TTG_DI_max), flush=True)
-        for _wn, _g, _was in (("LP", _caps[1], lp_gatev), ("MP", _caps[2], mp_gatev), ("HP", _caps[3], hp_gatev)):
-            if _g < 0.999 and _was >= 0.999:
-                print("TTG %s window throttled: gate = %.3f (share above target, proportional)" % (_wn, _g), flush=True)
-            if _g >= 0.999 and _was < 0.999:
-                print("TTG %s window throttle released" % _wn, flush=True)
-    bs_capped, lp_gatev, mp_gatev, hp_gatev = _caps
-
     it = int(t*dt_dt0) # Calculate the integer time. Note that the division by dt_dt0
-    # _dbg_on = comm.bcast(bool((2000 <= it <= 2020) or (2245 <= it <= 2262) or (30000 <= it <= 30030) or (60000 <= it <= 60030) or (100000 <= it <= 100030) or ((it % 2000) < 3)), root=0)
-    # if _dbg_on: _dbg_redsum("preK")
                        # ensures the integer time is relative to the specified physical
                        # time step, even if nu_l had to be adjusted for the nu_l_min constraint
 
@@ -6422,10 +6607,6 @@ while int(t-dt) <= nt:
         if code == "c" and RKTLBM:
                 t0 = time.time()
 
-                # hd/hb now ride the main packed edge exchange (slots i_HD/i_HB,
-                # face-crossing direction subsets, persistent requests) instead of
-                # the standalone blocking get_edges_hd() exchange.
-
                 RKTLBM_strmac( \
                 na,D,nx_i,ny_i,nz_i,xedge,yedge,zedge, \
                 mx_i,my_i,mz_i, \
@@ -6436,8 +6617,6 @@ while int(t-dt) <= nt:
                 f_b, f_b_last, \
                 Rheology, \
                 h, h_last, \
-                hd, hd_last, \
-                hb, hb_last, \
                 boundary_l,xl,naL,nbL,bL,biL, \
                 boundary_r,xr,naR,nbR,bR,biR, \
                 boundary_b,yb,naB,nbB,bB,biB, \
@@ -6445,6 +6624,7 @@ while int(t-dt) <= nt:
                 boundary_u,zu,naU,nbU,bU,biU, \
                 boundary_d,zd,naD,nbD,bD,biD, \
                 BC_r_wetting_u, BC_b_wetting_u, BC_r_wetting_d, BC_b_wetting_d, \
+                BC_r_wetting_l, BC_b_wetting_l, BC_r_wetting_r, BC_b_wetting_r, \
                 shifted_distribution, \
                 rho_r_init, rho_b_init, \
                 rank)
@@ -6500,21 +6680,20 @@ while int(t-dt) <= nt:
                 FF, \
                 A, B, interface_thickness, g_comp, \
                 BC_r_wetting_u, BC_b_wetting_u, BC_r_wetting_d, BC_b_wetting_d, \
+                BC_r_wetting_l, BC_b_wetting_l, BC_r_wetting_r, BC_b_wetting_r, \
                 Rheology, Temperature, Nu_formula,\
                 tau_h, \
                 nu_f_r, nu_f_b, nu_star, \
                 nu_l_min, nu_l_min_cap, nu_l_max_cap, gamma_T, Tau_y, N, Delta_g, \
                 nu_total, tau_f_last, \
                 T_nd, \
-                act_E, act_V, Delta_eta_array, eta_p_input, DR_2, T0_p, dT_p, z_nd, \
+                act_E, act_V, Delta_eta_array, eta_p, DR_2, T0_p, dT_p, z_nd, \
                 h_last, L_ed, \
-                hd_last, D_ed, \
-                hb_last, D_eb, \
                 P0, cumulative_extracted_pd, cumulative_extracted_bs, \
                 cumulative_extracted_LP, cumulative_extracted_MP, cumulative_extracted_HP, \
                 P1_thresh, P2_thresh, \
                 M1_pd, M2_pd, M4_pd, \
-                M1_bs, (np_float(2.0) if bs_capped else M2_bs), M4_bs, \
+                M1_bs, M2_bs, M4_bs, \
                 collision, mask_bs, mask_pd, \
                 M_ext_bs_LP_TTG, M_ext_bs_MP_TTG, M_ext_bs_HP_TTG,
                 rho0_pd, rho_melt_pd, M_ext_pd, \
@@ -6531,18 +6710,14 @@ while int(t-dt) <= nt:
                 eta_u,eta_d, \
                 shifted_distribution, \
                 rho_r_init, rho_b_init, \
-                rank, \
-                np_float(lp_gatev), np_float(mp_gatev), np_float(hp_gatev))
+                rank)
 
                 f_r_tmp = f_r ; f_r = f_r_last ; f_r_last = f_r_tmp
                 f_b_tmp = f_b ; f_b = f_b_last ; f_b_last = f_b_tmp
                 g_tmp   = g   ; g   = g_last   ; g_last   = g_tmp
                 h_tmp   = h   ; h   = h_last   ; h_last   = h_tmp
-                hd_tmp  = hd  ; hd  = hd_last  ; hd_last  = hd_tmp
-                hb_tmp  = hb  ; hb  = hb_last  ; hb_last  = hb_tmp
 
                 totalTimeCalcs += (time.time()-t0)
-                # if _dbg_on: _dbg_redsum("postK")
 
         if code == "c" and not RKTLBM:
 
@@ -6563,14 +6738,14 @@ while int(t-dt) <= nt:
                 rho,eta,u, \
                 f_last,f,g_last,g, \
                 x_xa,y_ya,z_za, \
-                nu_f, tau_g, tau_h, BETA_G, \
+                nu_f, tau_g, tau_h, beta_g, \
                 Temperature, Rheology, Nu_formula, \
                 nu_l_min, nu_l_min_cap, nu_l_max_cap, gamma_T, Tau_y, N, Delta_g, \
                 nu_f_last, tau_f_last, nu_total, \
                 nu_star, \
                 P1_thresh, P2_thresh, \
                 M1_pd, M2_pd, M3_pd, M4_pd, \
-                M1_bs, (np_float(2.0) if bs_capped else M2_bs), M3_bs, M4_bs, \
+                M1_bs, M2_bs, M3_bs, M4_bs, \
                 rho0_pd, rho_melt_pd, M_ext_pd, \
                 rho0_bs, rho_melt_bs, M_ext_bs, \
                 M_ext_bs_LP_TTG, M_ext_bs_MP_TTG, M_ext_bs_HP_TTG, \
@@ -6609,14 +6784,14 @@ while int(t-dt) <= nt:
                 rho,eta,u, \
                 f_last,f,g_last,g, \
                 x_xa,y_ya,z_za, \
-                nu_f, tau_g, tau_h, BETA_G, \
+                nu_f, tau_g, tau_h, beta_g, \
                 Temperature, Rheology, Nu_formula, \
                 nu_l_min, nu_l_min_cap, nu_l_max_cap, gamma_T, Tau_y, N, Delta_g, \
                 nu_f_last, tau_f_last, nu_total, \
                 nu_star, \
                 P1_thresh, P2_thresh, \
                 M1_pd, M2_pd, M3_pd, M4_pd, \
-                M1_bs, (np_float(2.0) if bs_capped else M2_bs), M3_bs, M4_bs, \
+                M1_bs, M2_bs, M3_bs, M4_bs, \
                 rho0_pd, rho_melt_pd, M_ext_pd, \
                 rho0_bs, rho_melt_bs, M_ext_bs, \
                 M_ext_bs_LP_TTG, M_ext_bs_MP_TTG, M_ext_bs_HP_TTG, \
@@ -6658,14 +6833,14 @@ while int(t-dt) <= nt:
                 rho,eta,u, \
                 f_last,f,g_last,g, \
                 x_xa,y_ya,z_za, \
-                nu_f, tau_g, tau_h, BETA_G, \
+                nu_f, tau_g, tau_h, beta_g, \
                 Temperature, Rheology, Nu_formula, \
                 nu_l_min, nu_l_min_cap, nu_l_max_cap, gamma_T, Tau_y, N, Delta_g, \
                 nu_f_last, tau_f_last, nu_total, \
                 nu_star, \
                 P1_thresh, P2_thresh, \
                 M1_pd, M2_pd, M3_pd, M4_pd, \
-                M1_bs, (np_float(2.0) if bs_capped else M2_bs), M3_bs, M4_bs, \
+                M1_bs, M2_bs, M3_bs, M4_bs, \
                 rho0_pd, rho_melt_pd, M_ext_pd, \
                 rho0_bs, rho_melt_bs, M_ext_bs, \
                 M_ext_bs_LP_TTG, M_ext_bs_MP_TTG, M_ext_bs_HP_TTG, \
@@ -6705,7 +6880,7 @@ while int(t-dt) <= nt:
                    f_b[:,:,a,:] = f_b_new.reshape(ny_i,nz_i,nx_i)
                    g_new        = g_last[:,:,a,:].reshape(_NX_)[_x_xa_[a]]
                    g[:,:,a,:]   = g_new.reshape(ny_i,nz_i,nx_i)
-                   if rheology == "archean2":
+                   if rheology == "archean2" or rheology == "van-keken-miscible":
                       h_new         = h_last[:, :, a, :].reshape(_NX_)[_x_xa_[a]]
                       h[:, :, a, :] = h_new.reshape(ny_i, nz_i, nx_i)
             else:
@@ -6714,7 +6889,7 @@ while int(t-dt) <= nt:
                     f[:,:,a,:] = f_new.reshape(ny_i,nz_i,nx_i)
                     g_new      = g_last[:,:,a,:].reshape(_NX_)[_x_xa_[a]]
                     g[:,:,a,:] = g_new.reshape(ny_i,nz_i,nx_i)
-                    if rheology == "archean2":
+                    if rheology == "archean2" or rheology == "van-keken-miscible":
                        h_new         = h_last[:, :, a, :].reshape(_NX_)[_x_xa_[a]]
                        h[:, :, a, :] = h_new.reshape(ny_i, nz_i, nx_i)
 
@@ -6734,7 +6909,7 @@ while int(t-dt) <= nt:
             if shifted_distribution:
                 drho = np.sum(f,axis=2)
                 rho  = 1 + drho
-                if rheology == "archean2": 
+                if rheology == "archean2" or rheology == "van-keken-miscible": 
                    L_ed = np.sum(h,axis=2)
 
             else:
@@ -6749,11 +6924,11 @@ while int(t-dt) <= nt:
                    else:
                        rho_r = np.sum(f_r,axis=2)
                        rho_b = np.sum(f_b,axis=2)
-                   if rheology == "archean2":
+                   if rheology == "archean2" or rheology == "van-keken-miscible":
                        L_ed = np.sum(h,axis=2)
                 else:
                     rho  = np.sum(f,axis=2)
-                    if rheology == "archean2":
+                    if rheology == "archean2" or rheology == "van-keken-miscible":
                        L_ed = np.sum(h,axis=2)
 
 
@@ -6807,9 +6982,6 @@ while int(t-dt) <= nt:
                 T2_cond      = (T  > 1000)                                & (T < 1100 + 50 *((P-3.5)/3.5)**2)
                 P2_cond      = (P  > (2.35 + 0.15 * ((T-1000)/100)))   & (P < 5)
                 HP_TTG       = T2_cond & P2_cond
-                if lp_gatev < 0.05: LP_TTG = LP_TTG & False
-                if mp_gatev < 0.05: MP_TTG = MP_TTG & False
-                if hp_gatev < 0.05: HP_TTG = HP_TTG & False
 
                 # Melt extract calculations
                 mask1_bs_melt              = (T > T_solidus_bs) & (T < T_liquidus_bs) & (T_liquidus_bs > T_solidus_bs)
@@ -6822,7 +6994,7 @@ while int(t-dt) <= nt:
                 M_bs                       = np.where( M0_bs - cumulative_extracted_bs > 0, M0_bs - cumulative_extracted_bs, 0)
                 L_den                      = np.where( L_ed > 0.1, L_ed, 0)
                 M_ext_pd                   = np.where((M_pd > M2_pd) & ((M_pd - M1_pd) < M4_pd) & ((M_pd - M1_pd) > 0), (M_pd - M1_pd) * (1 - L_den) * mask_pd, 0)
-                M_ext_bs                   = np.where((M_bs > (np_float(2.0) if bs_capped else M2_bs)) & ((M_bs - M1_bs) < M4_bs) & ((M_bs - M1_bs) > 0), (M_bs - M1_bs) *      L_den  * mask_bs, 0)                
+                M_ext_bs                   = np.where((M_bs > M2_bs) & ((M_bs - M1_bs) < M4_bs) & ((M_bs - M1_bs) > 0), (M_bs - M1_bs) *      L_den  * mask_bs, 0)                
                 M_ext_bs_LP_TTG            = M_ext_bs * LP_TTG
                 M_ext_bs_MP_TTG            = M_ext_bs * MP_TTG
                 M_ext_bs_HP_TTG            = M_ext_bs * HP_TTG
@@ -6855,7 +7027,7 @@ while int(t-dt) <= nt:
                 # Density calculation for Peridotite/Basalt
                 P_garnet_in                  = 0.014 * T  - 5.4
                 P_plag_out                   = 0.024 * T  + 4
-                coef_phase_bs                = np.where(P*10 >= P_garnet_in, np.where(P*10 <= P_plag_out, 0.16 * (P*10 - P_garnet_in)/(P_plag_out - P_garnet_in), 0.16), 0)
+                coef_phase_bs                = np.where((P*10 >= P_garnet_in) & (P*10 <= P_plag_out),0.16 * (P*10 - P_garnet_in)/(P_plag_out - P_garnet_in),0)
                 coef_res_bs                  = 0.4  * cumulative_extracted_bs
                 coef_res_pd                  = np.where( M_pd < M4_pd, -0.04 * cumulative_extracted_pd,0.4*cumulative_extracted_pd)
                 coef_phase_pd                = 0
@@ -6887,7 +7059,7 @@ while int(t-dt) <= nt:
                    f_r_neq        = f_r - feq_r
                    f_b_neq        = f_b - feq_b                
                    g_neq          = g   - (g_eq + Delta_g[a])
-                   if rheology == "archean2":
+                   if rheology == "archean2" or rheology == "van-keken-miscible":
                       h_eq[:, :, a, :]   = L_ed   * w[a] * cu
                       h_neq = h - h_eq
                                      
@@ -6903,14 +7075,14 @@ while int(t-dt) <= nt:
                         cu = 1 + cu + 0.5*cu*cu - u2
                         f_eq[:,:,a,:] = rho * w[a] * cu
                         g_eq[:,:,a,:] = eta * f_eq[:,:,a,:] + Delta_g[a]
-                        if rheology == "archean2":
+                        if rheology == "archean2" or rheology == "van-keken-miscible":
                            h_eq[:, :, a, :]   = L_ed   * w[a] * cu
 
                     F_b[:,:,a,:] = w[a] * c[a,Z] * gi
 
                 f_neq = f - f_eq
                 g_neq = g - g_eq
-                if rheology == "archean2":
+                if rheology == "archean2" or rheology == "van-keken-miscible":
                    h_neq = h - h_eq
 
 
@@ -7016,7 +7188,7 @@ while int(t-dt) <= nt:
                 for a in range(na):
                     f[:,:,a,:] += (Delta_f[:,:,a,:] + F_b[:,:,a,:])
                     g[:,:,a,:] -= (g_neq[:,:,a,:]/tau_g)
-                    if rheology == "archean2":
+                    if rheology == "archean2" or rheology == "van-keken-miscible":
                        h[:,:,a,:] -= (h_neq[:,:,a,:]/tau_h)
 
 #           Add the collision terms and Boussinesq term using SRT
@@ -7082,7 +7254,7 @@ while int(t-dt) <= nt:
                 for a in range(na):
                     f[:,:,a,:] -= (f_neq[:,:,a,:]/tau_f - F_b[:,:,a,:])
                     g[:,:,a,:] -= (g_neq[:,:,a,:]/tau_g)
-                    if rheology == "archean2":
+                    if rheology == "archean2" or rheology == "van-keken-miscible":
                        h[:,:,a,:] -= (h_neq[:,:,a,:]/tau_h)
 
             if RKTLBM:
@@ -7090,8 +7262,6 @@ while int(t-dt) <= nt:
                f_b_tmp = f_b ; f_b = f_b_last ; f_b_last = f_b_tmp
                g_tmp   = g   ; g   = g_last   ; g_last   = g_tmp
                h_tmp   = h   ; h   = h_last   ; h_last   = h_tmp
-               hd_tmp  = hd  ; hd  = hd_last  ; hd_last  = hd_tmp
-               hb_tmp  = hb  ; hb  = hb_last  ; hb_last  = hb_tmp
              
             totalTimeCalcs += (time.time()-t0)
 
@@ -7100,15 +7270,8 @@ while int(t-dt) <= nt:
     t0 = time.time()
 
     new_mach_max = False
-#   With variable dt the nominal counter it advances in float increments, and a
-#   single rank disagreeing on these comparisons deadlocks the collectives
-#   inside this block (observed on M1_hd_smC: 14 ranks in get_max_field, one
-#   elsewhere). Decide the entry on rank 0 and broadcast so it is identical by
-#   construction on every rank.
-    _do_mach = ((it != it_last_mach    and it >= (it_last_mach    + Inc_mach   )) or
-                (it != it_last_vary_dt and it >= (it_last_vary_dt + Inc_vary_dt) and it >= start_vary_dt))
-    _do_mach = comm.bcast(_do_mach, root=0)
-    if _do_mach:
+    if (it != it_last_mach    and it >= (it_last_mach    + Inc_mach   )) or \
+       (it != it_last_vary_dt and it >= (it_last_vary_dt + Inc_vary_dt)  and it >= start_vary_dt):
 
         it_mach_calc  = it
 
@@ -7121,6 +7284,10 @@ while int(t-dt) <= nt:
         new_mach_max  = True
         mach_max = mach_max*np.ones(1,dtype=np.float32)
         comm.Bcast(mach_max,root=0) ; mach_max = mach_max[0]
+
+        mach_sum     += mach_max ; n_mach_sum += 1
+        mach_ave_run  = mach_sum/n_mach_sum ; mach_max_ave = mach_ave_run
+        mach_max_run  = max(mach_max_run,mach_max) 
 
 #       Calculate dT_fluct on core 0 and put it onto all cores
 
@@ -7150,15 +7317,13 @@ while int(t-dt) <= nt:
 #   Print the Mach number to keep track of accuracy and stability
 #   and print the density fluctuations, and a warning if these are high
 
-    _do_mach_bk = (it != it_last_mach and it >= (it_last_mach + Inc_mach))
-    _do_mach_bk = comm.bcast(_do_mach_bk, root=0)
-    if _do_mach_bk:
+    if it != it_last_mach and it >= (it_last_mach + Inc_mach):
         it_mach      = max(0,it_last_mach + Inc_mach)
         it_last_mach = it_mach
         if rank == 0:
             if output_units == "physical":
                 time_text = timesteps_to_physical_time_text(t,dt_p,output_units)
-                print("Time = %d (%d computed) = %s, mach = %4.2g" %(it_mach,t_computed,time_text,mach_max),end="",flush=True)
+                print("Time = %d (%d computed) = %s, mach(now,ave,max) = (%5.3g,%5.3g,%5.3g)" %(it_mach,t_computed,time_text,mach_max,mach_max_ave,mach_max_run),end="",flush=True)
             else:
                 print("Time = %d (%d computed), mach = %4.2g" %(it_mach,t_computed,mach_max),end="",flush=True)
             if not RKTLBM: print(", rho = %4.2f +/- %6.4f" %(rho_bar,drho_rms),end="",flush=True)
@@ -7174,18 +7339,21 @@ while int(t-dt) <= nt:
             rho_diag = np.maximum(rho_r/rho1 + rho_b/rho2, 1e-30)
         else:
             rho_diag = rho
-        _bd1 = bmk_diagnostics()
-        if rank == 0 and _bd1:
-            print("t = %s  Vrms_nd=%9.4g  v_rms=%8.3f cm/yr  Nu=%7.3f  T_bar=%7.4f  T_mean=%7.1f C" % (
-                timesteps_to_physical_time_text(t,dt_p,output_units), _bd1["Vrms_nd"], _bd1["v_rms_cm"], _bd1["Nu"], _bd1["T_bar"], _bd1["T_mean_C"]), flush=True)
+        v_rms_diag          = np.sqrt(get_mean_field(np.einsum('yzdx,yzdx->yzx', u, u)))
+        T_mean_diag         = get_mean_field(np.float32(eta / DR_2))
+        T_max_diag, T_min_diag = get_max_min_field(np.float32(eta / DR_2))
+        rho_mean_diag       = get_mean_field(np.float32(rho_diag))
+        rho_max_diag, rho_min_diag = get_max_min_field(np.float32(rho_diag))
+        if rank == 0:
+            print("1My t=%7.2f My  v_rms=%9.4g  T_mean=%7.2f  T=[%7.2f,%7.2f]  rho_mean=%9.4g  rho=[%9.4g,%9.4g]" %(
+                t_My_now, v_rms_diag, T_mean_diag, T_min_diag, T_max_diag,
+                rho_mean_diag, rho_min_diag, rho_max_diag), flush=True)
 
 #   Change the print increment to print the Mach number as it gets high
 #   and may be starting to blow up and eventually exit if it is blowing up
 
-    _do_vary = ((mach_max > max_mach_limit and new_mach_max and it >= start_vary_dt) or
-                (it != it_last_vary_dt and it >= it_last_vary_dt + Inc_vary_dt and it >= start_vary_dt))
-    _do_vary = comm.bcast(_do_vary, root=0)
-    if _do_vary:
+    if ((mach_max > max_mach_limit and new_mach_max and it >= start_vary_dt) or \
+       (it != it_last_vary_dt and it >= it_last_vary_dt + Inc_vary_dt and it >= start_vary_dt)):
 
         it_vary_dt      = max(start_vary_dt,it_last_vary_dt + Inc_vary_dt)
         it_last_vary_dt = it_vary_dt
@@ -7199,9 +7367,8 @@ while int(t-dt) <= nt:
             if mach_max > max_mach_limit:
 
                 factor      = factor_decrease_dt     # Factor to decrease time step
-                if dt*factor < factor_min: factor = factor_min/dt   # land ON the floor, never below
 
-                if dt > factor_min*1.0001 and nu_f0 > nu_l_min:
+                if dt > factor_min and nu_f0 > nu_l_min:
 
                     if factor*nu_f0 < nu_l_min:
                         factor = nu_l_min/nu_f0 # Limit to never go below nu_l_min
@@ -7209,17 +7376,12 @@ while int(t-dt) <= nt:
                     dt_last  = dt
                     dt      *= factor           # Set the new time step increment
                     beta_g  *= factor**2        # Update gravity => Boussinesq factor
-                    BETA_G  *= factor**2        # gauge profile tracks beta_g
                     if RKTLBM:
                        nu_f_r *= factor
                        nu_f_b *= factor
                        nu_g0  *= factor
                        tau_g0    = nu_g0   * 3 + 0.5             
                        tau_h0    = nu_g0   * Pr/Peclet * 3 + 0.5
-                       g_comp *= factor**2         # Compositional gravity scales as beta_g
-                       nu_star *= factor            # Lattice viscosity offset in strain_rate nu_formula
-                       tau_g  -= 0.5 ; tau_g *= factor ; tau_g += 0.5   # Thermal relaxation array: nu_g part scales with dt
-                       tau_h  -= 0.5 ; tau_h *= factor ; tau_h += 0.5
                     else:
                        nu_f    *= factor           # Update viscosity
                        nu_f0   *= factor           # Update reference viscosity (for print)
@@ -7248,17 +7410,12 @@ while int(t-dt) <= nt:
                     dt_last  = dt
                     dt      *= factor          # Set the new time step increment
                     beta_g  *= factor**2       # Update gravity => Boussinesq factor
-                    BETA_G  *= factor**2        # gauge profile tracks beta_g
                     if RKTLBM:
                        nu_f_r *= factor
                        nu_f_b *= factor
                        nu_g0  *= factor
                        tau_g0    = nu_g0   * 3 + 0.5
                        tau_h0    = nu_g0   * Pr/Peclet * 3 + 0.5  
-                       g_comp *= factor**2         # Compositional gravity scales as beta_g
-                       nu_star *= factor            # Lattice viscosity offset in strain_rate nu_formula
-                       tau_g  -= 0.5 ; tau_g *= factor ; tau_g += 0.5   # Thermal relaxation array: nu_g part scales with dt
-                       tau_h  -= 0.5 ; tau_h *= factor ; tau_h += 0.5
                     else:
                        nu_f    *= factor           # Update viscosity
                        nu_f0   *= factor           # Update reference viscosity (for print)
@@ -7324,11 +7481,47 @@ while int(t-dt) <= nt:
 #   Output
 #--------------------------------------------------------------------------
 
+
+#--------------------------------------------------------------------------
+#   Output
+#--------------------------------------------------------------------------
+
+#   Set write data and write plots flags
+
+    if t >= n_data*Inc_data_float:
+          data_out   = output_data ; n_data += 1
+          write_data = data_out
+    else: data_out   = False
+
+    if data_out:
+
+        if t >= n_plots*Inc_plots_float:
+              plots_out = True  ; n_plots += 1
+        else: plots_out = False
+
+        if plots_out:
+            write_plots = output_plots
+        else:
+            write_plots = False
+    else:
+        write_data      = False
+        write_plots     = False
+
+#   Write benchmark file and plot temperature profile
+
+    if t >= n_bmk*Inc_bmk_float:
+        t_bmk = int(secs_to_float_time_timescale(t*dt_p,timescale_Inc_bmk,rank)+0.5)
+        write_bmk  = output_data
+        bmk_out    = True  ; n_bmk += 1
+        plot_and_write_bmk(eta/(rho*DR_2)/dT_p+0.5,r'$T$')
+    else:
+        bmk_out    = False
+        write_bmk  = False
+
     if output_data and (it == 0 or (it != it_last_data and it >= (it_last_data + Inc_data))):
         it_data       = max(0,it_last_data + Inc_data)
         it_output     = it_data
         it_last_data  = it_data
-        _save_fields_now = (int(round(it_data / max(Inc_data,1))) % max(int(fields_every_n_data),1) == 0)
         write_data    = True
     else:
         write_data = False
@@ -7368,13 +7561,11 @@ while int(t-dt) <= nt:
         if plot_T :
            write_and_plot_field(eta/DR_2,"T",r'$\displaystyle T$',"Degrees (C)",r'$^\circ C$', \
                save=True,plot=plot_T,clip=clip_T,gpow=gpow_T,c0=T0_p+dT_p/2,c1=1,vmin=vmin,vmax=vmax)
-           #   Write and plot temperature profile
-           plot_field_profile(eta/DR_2,"T",r'$\displaystyle T$',c0=T0_p+dT_p/2,c1=1)
 
 #       Write and plot density
 #       rho_plot (float64) needed by both the rho plot and Dynamic_viscosity
         if RKTLBM:
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               if melt_extraction:
                  rho_plot = (rho_eff + rho_r * rho1_p).astype(np.float64)
               else:
@@ -7382,7 +7573,7 @@ while int(t-dt) <= nt:
            else:
               rho_plot = (rho_r*rho1_p + rho_b*rho2_p).astype(np.float64)
         else:
-           if rheology == "archean2":
+           if rheology == "archean2" or rheology == "van-keken-miscible":
               rho_plot = (rho*(rho0_bs * L_ed + rho0_pd * (1-L_ed))).astype(np.float64)
            else:
               rho_plot = (rho * rho_p).astype(np.float64)
@@ -7407,15 +7598,12 @@ while int(t-dt) <= nt:
             print("----------------------------- Velocity ---------------------------",flush=True)
             print("Saving u_x E [%9.4g" %(u_x_min),",%9.3g" %(u_x_max),"]",flush=True)
             print("Saving u_z E [%9.4g" %(u_z_min),",%9.3g" %(u_z_max),"]",flush=True)
-            if globals().get("_save_fields_now", True):
-             filename = data_dir + "u_x_%s" %(timetext(it_data,timescale_Inc_data,dt_p))     ; np.save(filename,U_x0)
-            if globals().get("_save_fields_now", True):
-             filename = data_dir + "u_z_%s" %(timetext(it_data,timescale_Inc_data,dt_p))     ; np.save(filename,U_z0)
+            filename = data_dir + "u_x_%s" %(timetext(it_data,timescale_Inc_data,dt_p))     ; np.save(filename,U_x0)
+            filename = data_dir + "u_z_%s" %(timetext(it_data,timescale_Inc_data,dt_p))     ; np.save(filename,U_z0)
             if D == 3:
                 u_y_min = np.min(U_y0) ; u_y_max = np.max(U_y0)
                 print("Saving u_y E [%9.4g" %(u_y_min),",%9.3g" %(u_y_max),"]",flush=True)
-                if globals().get("_save_fields_now", True):
-                 filename = data_dir + "u_y_%s" %(timetext(it_data,timescale_Inc_data,dt_p)) ; np.save(filename,U_y0)
+                filename = data_dir + "u_y_%s" %(timetext(it_data,timescale_Inc_data,dt_p)) ; np.save(filename,U_y0)
 
 #       Plot |u| and/or velocity vectors
 
@@ -7513,7 +7701,7 @@ while int(t-dt) <= nt:
                 rho = np.maximum(rho_r + rho_b, 1e-30)
                 if rheology == "archean2" and melt_extraction:
                     rho_solid_plot = rho_eff + rho_r * rho1_p
-                elif rheology == "archean2":
+                elif rheology == "archean2" or rheology == "van-keken-miscible":
                     rho_solid_plot = rho_r * rho1_p + rho_b * ((1 - L_ed) * rho2_p + L_ed * rho3_p)
                 else:
                     # linear / archean: simple two-color mix using species densities
@@ -7528,13 +7716,14 @@ while int(t-dt) <= nt:
 
 #       Output for archean2 rheology
 
-        if rheology == "archean2":
+        if rheology == "archean2" or rheology == "van-keken-miscible":
 
 #           Write and plot the density energy distribution
 
             if plot_L:
                 if rank == 0: print("------------------------------------------------------------------",flush=True)
                 write_and_plot_field(L_ed*100,"L",r'$\displaystyle L$',"%",r'Basalt %',save=True,plot=plot_L,plot_vectors=plot_vectors)
+
 #           Write and plot the effective and cummulative melt
 
             if plot_M_LP or plot_M_MP or plot_M_HP:
@@ -7542,14 +7731,12 @@ while int(t-dt) <= nt:
                 write_and_plot_field(M_ext_bs_LP_TTG*100,"M_LP",r'$\displaystyle M_{LP}$',"%",r'%',save=True,plot=plot_M_LP)
                 write_and_plot_field(M_ext_bs_MP_TTG*100,"M_MP",r'$\displaystyle M_{MP}$',"%",r'%',save=True,plot=plot_M_MP)
                 write_and_plot_field(M_ext_bs_HP_TTG*100,"M_HP",r'$\displaystyle M_{HP}$',"%",r'%',save=True,plot=plot_M_HP)
-            if plot_ce_pd or plot_ce_bs or plot_de_pd or plot_de_bs:
+            if plot_ce_pd or plot_ce_bs:
                if rank == 0: print("------------------------------------------------------------------",flush=True)
                write_and_plot_field(cumulative_extracted_LP*100,"ce_LP",r'$\displaystyle ce_{LP}$',"%",r'%',save=True,plot=plot_ce_LP)
                write_and_plot_field(cumulative_extracted_MP*100,"ce_MP",r'$\displaystyle ce_{MP}$',"%",r'%',save=True,plot=plot_ce_MP)
                write_and_plot_field(cumulative_extracted_HP*100,"ce_HP",r'$\displaystyle ce_{HP}$',"%",r'%',save=True,plot=plot_ce_HP)
                write_and_plot_field(cumulative_extracted_pd*100,"ce_pd",r'$\displaystyle ce_{pd}$',"%",r'%',save=True,plot=plot_ce_pd)
-               write_and_plot_field(D_ed*100,"de_pd",r'$\displaystyle D_{ed}$',"%",r'%',save=True,plot=plot_de_pd)
-               write_and_plot_field(D_eb*100,"de_bs",r'$\displaystyle D_{eb}$',"%",r'%',save=True,plot=plot_de_bs)
                write_and_plot_field(cumulative_extracted_bs*100,"ce_bs",r'$\displaystyle ce_{bs}$',"%",r'%',save=True,plot=plot_ce_bs)
             if plot_M_bs or plot_M_pd:
                if rank == 0: print("------------------------------------------------------------------",flush=True)
@@ -7601,13 +7788,13 @@ while int(t-dt) <= nt:
                             DI_pd.append((total_PD/total_area)*100)
                             full_circumference = 2 * np.pi * (dx_rev[0]/(2*np.pi) * nx)
                             rho_r_surface      = RHO_R[:, 0, :]                    
-                            cont_threshold     = 0.5   # real crust, not a film
+                            cont_threshold     = 0
                             cont_mask          = (rho_r_surface > cont_threshold).astype(np_float)
                             cell_area_surf     = dx_rev[0] * dy_rev[0]              # km^2 per surface cell
                             area_cont          = np.sum(cont_mask) * cell_area_surf # km^2 of "continent"
                             surf_area_lattice  = rho_r_surface.size * cell_area_surf
                             cont_area_frac     = (area_cont / surf_area_lattice) * 100
-                            mass_avg_percent   = np.mean(rho_r_surface, dtype=np.float64) * 100
+                            mass_avg_percent   = np.mean(rho_r_surface) * 100
                             print("Earth's total surface area (code): {:.2e} Km²".format(earth_TSA), flush=True)
                             print("Real area of the Annular Lattice:  {:.2e} Km²".format(real_area), flush=True)
                             print("Total area of the Annular Lattice: {:.2e} Km²".format(total_area), flush=True)
@@ -7642,8 +7829,8 @@ while int(t-dt) <= nt:
                          # as red (rho_r) in the domain. 100% = perfect deposit;
                          # <100% = red lost (deposit cap, BC sink, surface saturation);
                          # >100% = red being manufactured (BC inflation / wetting source).
-                         _sum_red  = float(np.sum(RHO_R, dtype=np.float64))   # float16 sum overflows past 65504
-                         _sum_cebs = float(np.sum(Cex_BS, dtype=np.float64))
+                         _sum_red  = float(np.sum(RHO_R))
+                         _sum_cebs = float(np.sum(Cex_BS))
                          _red_pct  = (_sum_red / _sum_cebs * 100.0) if _sum_cebs > 0 else 0.0
                          print(f"Total DI Basalt       = {DI_bs[-1]:.4f} %", flush=True)
                          print(f"red/ce_bs ratio       = {_red_pct:.4f} %  (sum rho_r / sum ce_bs;  ideal=100%)", flush=True)
@@ -7656,21 +7843,6 @@ while int(t-dt) <= nt:
                          print(f"MP TTG percent        = {Mex_MP_percent[-1]:.4f} %", flush=True)
                          print(f"HP TTG percent        = {Mex_HP_percent[-1]:.4f} %", flush=True)
                          print(f"Total DI Peridotite   = {DI_pd[-1]:.4f} %", flush=True)
-
-                         # Continental growth time series (Jain/Sizova style verification
-                         # data). One line per diagnostic step appended to RUN.growth,
-                         # following the .bmk pattern of the W code.
-                         growth_file = proj_dir + RUN + ".growth"
-                         if not os.path.exists(growth_file):
-                             with open(growth_file,"w") as _fg:
-                                 _fg.write("# it t_My DI_bs DI_LP DI_MP DI_HP DI_pd cont_area_km2 cont_frac surf_rho_r red_over_cebs (percentages except area)\n")
-                         if geometry == "annular":
-                             _gr_area = area_cont ; _gr_frac = cont_area_frac ; _gr_mass = mass_avg_percent
-                         else:
-                             _gr_area = 0.0 ; _gr_frac = 0.0 ; _gr_mass = 0.0
-                         with open(growth_file,"a") as _fg:
-                             _fg.write("%d %12.6g %9.4f %9.4f %9.4f %9.4f %9.4f %12.5g %9.4f %9.4f %9.4f\n" %(it, it*dt_p/sec_my, DI_bs[-1], DI_bs_LP[-1], DI_bs_MP[-1], DI_bs_HP[-1], DI_pd[-1], _gr_area, _gr_frac, _gr_mass, _red_pct))
-
                          nt_axis       = np.linspace(0,it*dt_p/sec_my,len(DI_bs))
                          if np_int(it*dt_p/sec_my) == 120 :
                             plt.figure(figsize=(4,2))
@@ -7813,8 +7985,7 @@ while int(t-dt) <= nt:
                     title      = r'$\displaystyle \log_{10}(Tau)$'
                     cbar_label = r'$\displaystyle \log_{10}$(lattice units)'
                 if rank == 0:
-                    if globals().get("_save_fields_now", True):
-                     filename = data_dir + "Tau_%s" %(timetext(it_data,timescale_Inc_data,dt_p)) ; np.save(filename,FIELD)
+                    filename = data_dir + "Tau_%s" %(timetext(it_data,timescale_Inc_data,dt_p)) ; np.save(filename,FIELD)
                     FIELD = get_plane(FIELD,plane,coordinate)
                     plot_field(title,file,FIELD,clip_Tau,gpow_Tau,zero_mean=False,cbar_label=cbar_label,plot_image=True,plot_vectors=False)
 
@@ -7836,7 +8007,7 @@ while int(t-dt) <= nt:
 #--------------------------------------------------------------------------
 
     if it >= nt:
-       if rheology == "archean2":
+       if rheology == "archean2" or rheology == "van-keken-miscible":
           if plot_DI : 
                      if rank == 0:
                          print("------------------------------------------------------------------",flush=True)

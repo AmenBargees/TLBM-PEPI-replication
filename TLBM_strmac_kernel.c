@@ -54,9 +54,8 @@
                         f_r[y][z][a][x]      = ff_r[yy_ya][zz_za][a][xx_xa];
                         f_b[y][z][a][x]      = ff_b[yy_ya][zz_za][a][xx_xa];
                         g  [y][z][a][x]      = gg  [yy_ya][zz_za][a][xx_xa];
-                        if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
-                            h  [y][z][a][x]  = hh  [yy_ya][zz_za][a][xx_xa];
-                            }
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
+                            h  [y][z][a][x]  = hh  [yy_ya][zz_za][a][xx_xa];}
                     }
                 }
 
@@ -70,7 +69,7 @@
                         f_r[y][z][aR[a]][xl] = ff_r[y][z][aiR[a]][xl];
                         f_b[y][z][aR[a]][xl] = ff_b[y][z][aiR[a]][xl];
                         g  [y][z][aR[a]][xl] = gg  [y][z][aiR[a]][xl];
-                        if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                             h  [y][z][aR[a]][xl] = hh  [y][z][aiR[a]][xl];
                         }
                     }
@@ -84,7 +83,7 @@
                         tmp = 0.5*(g[y][z][aR[a]][xl] + g[y][z][aiR[a]][xl]);
                         g[y][z][aR [a]][xl] = tmp;
                         g[y][z][aiR[a]][xl] = tmp;
-                        if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                             tmp = 0.5*(h[y][z][aR[a]][xl] + h[y][z][aiR[a]][xl]);
                             h[y][z][aR [a]][xl] = tmp;
                             h[y][z][aiR[a]][xl] = tmp;
@@ -97,7 +96,7 @@
                         f_r[y][z][aL[a]][xr] = ff_r[y][z][aiL[a]][xr];
                         f_b[y][z][aL[a]][xr] = ff_b[y][z][aiL[a]][xr];
                         g  [y][z][aL[a]][xr] = gg  [y][z][aiL[a]][xr];
-                        if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                             h  [y][z][aL[a]][xr] = hh  [y][z][aiL[a]][xr];
                         }
                     }
@@ -111,7 +110,7 @@
                         tmp = 0.5*(g[y][z][aL[a]][xr]   + g  [y][z][aiL[a]][xr]);
                         g[y][z][aL [a]][xr] = tmp;
                         g[y][z][aiL[a]][xr] = tmp;
-                        if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                             tmp = 0.5*(h[y][z][aL[a]][xr] + h[y][z][aiL[a]][xr]);
                             h[y][z][aL [a]][xr] = tmp;
                             h[y][z][aiL[a]][xr] = tmp;
@@ -129,7 +128,7 @@
                             f_r[y][z][aD[a]][x] = ff_r[y][z][aiD[a]][x];
                             f_b[y][z][aD[a]][x] = ff_b[y][z][aiD[a]][x];
                             g  [y][z][aD[a]][x] = gg  [y][z][aiD[a]][x];
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 h  [y][z][aD[a]][x] = hh  [y][z][aiD[a]][x];
                             }
                         }
@@ -145,7 +144,7 @@
                             tmp = 0.5*(g[y][z][aD[a]][x]   + g  [y][z][aiD[a]][x]);
                             g[y][z][aD [a]][x] = tmp;
                             g[y][z][aiD[a]][x] = tmp;
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 tmp = 0.5*(h[y][z][aD[a]][x] + h[y][z][aiD[a]][x]);
                                 h[y][z][aD [a]][x] = tmp;
                                 h[y][z][aiD[a]][x] = tmp;
@@ -160,7 +159,7 @@
                             f_r[y][z][aU[a]][x] = ff_r[y][z][aiU[a]][x];
                             f_b[y][z][aU[a]][x] = ff_b[y][z][aiU[a]][x];
                             g  [y][z][aU[a]][x] = gg  [y][z][aiU[a]][x];
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 h  [y][z][aU[a]][x] = hh  [y][z][aiU[a]][x];
                             }
                         }
@@ -176,7 +175,7 @@
                             tmp = 0.5*(g[y][z][aU[a]][x]   + g  [y][z][aiU[a]][x]);
                             g[y][z][aU [a]][x] = tmp;
                             g[y][z][aiU[a]][x] = tmp;
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 tmp = 0.5*(h[y][z][aU[a]][x] + h[y][z][aiU[a]][x]);
                                 h[y][z][aU [a]][x] = tmp;
                                 h[y][z][aiU[a]][x] = tmp;
@@ -191,7 +190,7 @@
                             f_r[y][z][aF[a]][x] = ff_r[y][z][aiF[a]][x];
                             f_b[y][z][aF[a]][x] = ff_b[y][z][aiF[a]][x];
                             g  [y][z][aF[a]][x] = gg  [y][z][aiF[a]][x];
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 h  [y][z][aF[a]][x] = hh  [y][z][aiF[a]][x];
                             }
                         }
@@ -207,7 +206,7 @@
                             tmp = 0.5*(g[y][z][aF[a]][x]   + g  [y][z][aiF[a]][x]);
                             g[y][z][aF [a]][x] = tmp;
                             g[y][z][aiF[a]][x] = tmp;
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 tmp = 0.5*(h[y][z][aF[a]][x] + h[y][z][aiF[a]][x]);
                                 h[y][z][aF [a]][x] = tmp;
                                 h[y][z][aiF[a]][x] = tmp;
@@ -222,7 +221,7 @@
                             f_r[y][z][aB[a]][x] = ff_r[y][z][aiB[a]][x];
                             f_b[y][z][aB[a]][x] = ff_b[y][z][aiB[a]][x];
                             g  [y][z][aB[a]][x] = gg  [y][z][aiB[a]][x];
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 h  [y][z][aB[a]][x] = hh  [y][z][aiB[a]][x];
                             }
                         }
@@ -238,7 +237,7 @@
                             tmp = 0.5*(g[y][z][aB[a]][x]   + g  [y][z][aiB[a]][x]);
                             g[y][z][aB [a]][x] = tmp;
                             g[y][z][aiB[a]][x] = tmp;
-                            if (A2_HSTRM && strcmp(rheology,"archean2") == 0) {
+                            if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HSTRM && strcmp(rheology,"archean2") == 0)) {
                                 tmp = 0.5*(h[y][z][aB[a]][x] + h[y][z][aiB[a]][x]);
                                 h[y][z][aB [a]][x] = tmp;
                                 h[y][z][aiB[a]][x] = tmp;

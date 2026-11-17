@@ -4,6 +4,9 @@ import sys
 
 # Initialize conversion factors
 
+sec_ns   = 1e-9            # Secs to nanosecs  conversion factor
+sec_us   = 1e-6            # Secs to microsecs conversion factor
+sec_ms   = 1e-3            # Secs to millisecs conversion factor
 sec_m    = 60              # Seconds to Mins   conversion factor
 sec_h    = 60    *sec_m    # Seconds to Hours  conversion factor
 sec_d    = 24    *sec_h    # Seconds to Days   conversion factor
@@ -15,12 +18,53 @@ sec_my   = 10**6 *sec_y    # Seconds to My     conversion factor
 sec_gy   = 10**9 *sec_y    # Seconds to Gy     conversion factor
 u_cm_py  = 100   *sec_y    # m/sec to cm/y     conversion factor
 
+#----------------------------------------------------------------------------
+# Get integer time from time in secs for a specified timescale
+#----------------------------------------------------------------------------
+
+def secs_to_float_time_timescale(secs,time_scale,rank):
+
+    for i in range(len(physical_timescales)):
+        if time_scale == physical_timescales[i]:
+            t_p = secs/conversion_timesteps_to_physical_time[i]
+    return t_p
+
+
+#-------------------------------------------------------------------------------
+# Get the time from the timestep for prints and plots
+#
+# Arguments are t (LBM time) and dt_p (physical time step) and output_units (physical or timesteps)
+#-------------------------------------------------------------------------------
+
+def timesteps_to_time_text(t,dt_p,output_units="physical"):
+
+    t_p = t*dt_p    # Get time in secs
+
+    if output_units == "physical": time_text = time_to_physical_time_text(t_p,dt_p)
+    else                         : time_text = "%d timesteps" %(int(t+0.5))
+
+    return time_text
+
+#----------------------------------------------------------------------------
+#   Get the time text to print from a time specification
+#----------------------------------------------------------------------------
+
+def get_time_value_text_int_timescale_from_time_spec(time_spec,time_value,dt_p):
+
+    error = False
+    time_int,time_scale,error    = timevalue(time_spec,time_value,error,0)
+    time_steps,time_steps_float,time_steps_factor = timevalue_to_timesteps(time_int,time_scale,dt_p,0)
+
+    return time_steps, time_int, time_scale
+
 #-------------------------------------------------------------------------------
 # Break down a timescale specification text into the integer & text parts
 #-------------------------------------------------------------------------------
 
-valid_timescales = ["timesteps", "Secs", "Mins" ,"Hours", "Days", "Weeks", "Months", "Years", "Ky"  , "My"  , "Gy"  ]
-factor_timesteps = [ 1         , 1     , sec_m  , sec_h  , sec_d , sec_w , sec_M   , sec_y  , sec_ky, sec_my, sec_gy]
+valid_timescales = ["timesteps", "Nsecs", "Usecs", "Msecs", "Secs", "Mins" ,"Hours", "Days", "Weeks", "Months", "Years", "Ky"  , "My"  , "Gy"  ]
+factor_timesteps = [ 1         , sec_ns , sec_us , sec_ms , 1     , sec_m  , sec_h  , sec_d , sec_w , sec_M   , sec_y  , sec_ky, sec_my, sec_gy]
+physical_timescales = valid_timescales                           [1:]
+conversion_timesteps_to_physical_time = factor_timesteps         [1:]
 
 #-------------------------------------------------------------------------------
 # Convert an input time value in time scale units to timesteps
@@ -126,11 +170,11 @@ def timesteps_to_physical_time_text(t,dt_p,output_units="physical"):
 
     t_p = t*dt_p          # Get the physical time in secs
 
-    physical_time_text = time_to_physical_time_text(t_p)
+    physical_time_text = time_to_physical_time_text(t_p,dt_p)
 
     return physical_time_text
 
-def time_to_physical_time_text(t_p):
+def time_to_physical_time_text(t_p,dt_p):
 
     if t_p < sec_h:       # Less than 1 hour -> secs
         physical_time_text = "%5.3f" %(t_p)        + " secs"
@@ -273,6 +317,10 @@ def get_lattice_viscosity(state, power_correction,Ra,Pr,g_p,beta_p,dT_p,L_p,eta_
         if rank == 0:
             print("State = solid => using diffusion timescale: dt_p = L_p**2*ka_l/(L_l**2*ka_p)",flush=True)
         if dt_p != "unspecified":
+            error = False ; rank = 0
+            dt_p_int, timescale_dt_p , error = timevalue("dt_p",dt_p,error,rank)
+            dt_p       = timevalue_to_secs(dt_p_int,timescale_dt_p)
+
             ka_l = dt_p*L_l**2*ka_p/L_p**2
             nu_l = ka_l*Pr_l
             g_l  = nu_l**2*Ra_l/(C_l*L_l**3*Pr_l)

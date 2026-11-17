@@ -66,19 +66,12 @@ def get_parameters(filename,rank=0):
 #   Physical specifications
 
     global state, power_correction, Ra, Pr, Peclet, R_p, L_p, rho_p, eta_p, ka_p, g_p, beta_p, T0_p, dT_p
-    global eta_min_p, eta_max_p
-    global act_E_1, act_E_2, act_E_3, act_V_1, act_V_2, act_V_3
-    global Delta_eta_1, Delta_eta_2, Delta_eta_3, P_scale_1, P_scale_2, P_scale_3
-    global rho_z_file, P_z_file, T_z_file, L_z_file, basalt_depth_p
-    global dT_p_random, T_p_random, initialize_ncells, cell_amplitude, amp_sinusoid, x_periods, y_periods
-    global TTG_DI_max, TTG_LP_frac, TTG_MP_frac, TTG_HP_frac, fields_every_n_data
-    global M1_pd, M2_pd, M3_pd, M4_pd, M1_bs, M2_bs, M3_bs, M4_bs
-    global L_file
-    global L_file
-    global g_dx_gauge
+    global rho_z_file, P_z_file, T_z_file, L_z_file
+    global dT_p_random, initialize_ncells, cell_amplitude, amp_sinusoid, x_periods, y_periods
     global H, Cp, temperature, gamma_T, rheology, nu_formula, Tau_y0_p, Tau_yi_p, nu_star, N
-    global RKTLBM, collision, melt_time, melt_position, melt_extraction, melt_test_mode
-    global rho1, rho2, rho1_p, rho2_p, rho3_p, rho12, rho_r_file, rho_b_file, theta_u, theta_d, A, interface_thickness, nu_r_factor, beta_g_factor, g_comp_factor
+    global RKTLBM, collision, melt_time, melt_position, melt_extraction 
+    global rho_p_TTG, rho1_p, rho_p_peridotite, rho2_p, rho_p_basalt, rho3_p, rho_r_file, rho_b_file, A, interface_thickness, nu_r_factor, beta_g_factor, g_comp_factor, w_diagonal, theta_u, theta_d, theta_l, theta_r
+    global rayleigh_taylor_option, depth_light, perturbation_size, optimize_nu
 
 #   Boundary condition specifications
 
@@ -99,7 +92,7 @@ def get_parameters(filename,rank=0):
 
 #   Accuracy parameters
 
-    global float_bits, edge_bits, data_bits, shifted_distribution, pre_streaming_BC
+    global float_bits, edge_bits, data_bits, shifted_distribution
 
 #   Output specifiations
 
@@ -107,14 +100,14 @@ def get_parameters(filename,rank=0):
 
 #   Output increment parameters
 
-    global Inc_data, Inc_plots, Inc_timing, Inc_mach
+    global Inc_data, Inc_plots, Inc_bmk, Inc_timing, Inc_mach
 
 #   Output plot parameters
 
     global plane, coordinates
     global plot_size, plot_size_factor, plot_colorbar, colormap, latex
-    global plot_rho, plot_T, plot_u, plot_nu_total, plot_nu_kinematic, plot_nu_dynamic, plot_Ra, plot_vectors, plot_Tau
-    global plot_rho_eff, plot_L, plot_rho_s, plot_M_pd, plot_M_bs, plot_M_LP, plot_M_MP, plot_M_HP, plot_ce_LP, plot_ce_MP, plot_ce_HP, plot_ce_pd, plot_ce_bs, plot_de_pd, plot_de_bs
+    global plot_rho, plot_T, plot_u, plot_nu_total, plot_nu_kinematic, plot_nu_dynamic, plot_vectors, plot_Tau
+    global plot_rho_eff, plot_L, plot_rho_s, plot_M_pd, plot_M_bs, plot_M_LP, plot_M_MP, plot_M_HP, plot_ce_LP, plot_ce_MP, plot_ce_HP, plot_ce_pd, plot_ce_bs
     global plot_T_sol_pd, plot_T_sol_bs, plot_T_liq_pd, plot_T_liq_bs, plot_P, plot_DI
     global plot_rho_r, plot_rho_b, plot_f_r, plot_f_b, plot_FF_mag, plot_FF_x, plot_FF_z, plot_FF_y
  
@@ -229,8 +222,6 @@ def get_parameters(filename,rank=0):
                 valid = True
                 if value != "unspecified": Ra = float(value)
                 else:                      Ra = str(value)
-            elif parameter == "g_dx_gauge":
-                valid = True ; g_dx_gauge = str2bool(value)
             elif parameter == "Pr":
                 valid = True
                 if value != "unspecified": Pr = float(value)
@@ -245,10 +236,6 @@ def get_parameters(filename,rank=0):
                 valid = True ; P_z_file = str(value)
             elif parameter == "T_z_file":
                 valid = True ; T_z_file = str(value)
-            elif parameter == "L_file":
-                valid = True ; L_file = str(value)
-            elif parameter == "L_file":
-                valid = True ; L_file = str(value)
             elif parameter == "L_z_file":
                 valid = True ; L_z_file = str(value)
             elif parameter == "eta_p":
@@ -265,68 +252,12 @@ def get_parameters(filename,rank=0):
                 valid = True ; g_p = float(value)
             elif parameter == "beta_p":
                 valid = True ; beta_p = float(value)
-            elif parameter == "eta_min_p":
-                valid = True ; eta_min_p = float(value)
-            elif parameter == "eta_max_p":
-                valid = True ; eta_max_p = float(value)
-            elif parameter == "act_E_1":
-                valid = True ; act_E_1 = float(value)
-            elif parameter == "act_E_2":
-                valid = True ; act_E_2 = float(value)
-            elif parameter == "act_E_3":
-                valid = True ; act_E_3 = float(value)
-            elif parameter == "act_V_1":
-                valid = True ; act_V_1 = float(value)
-            elif parameter == "act_V_2":
-                valid = True ; act_V_2 = float(value)
-            elif parameter == "act_V_3":
-                valid = True ; act_V_3 = float(value)
-            elif parameter == "Delta_eta_1":
-                valid = True ; Delta_eta_1 = float(value)
-            elif parameter == "Delta_eta_2":
-                valid = True ; Delta_eta_2 = float(value)
-            elif parameter == "Delta_eta_3":
-                valid = True ; Delta_eta_3 = float(value)
-            elif parameter == "P_scale_1":
-                valid = True ; P_scale_1 = float(value)
-            elif parameter == "P_scale_2":
-                valid = True ; P_scale_2 = float(value)
-            elif parameter == "P_scale_3":
-                valid = True ; P_scale_3 = float(value)
             elif parameter == "T0_p":
                 valid = True ; T0_p = float(value)
             elif parameter == "dT_p":
                 valid = True ; dT_p = float(value)
             elif parameter == "dT_p_random":
                 valid = True ; dT_p_random = float(value)
-            elif parameter == "T_p_random":
-                valid = True ; T_p_random = float(value)
-            elif parameter == "TTG_DI_max":
-                valid = True ; TTG_DI_max = float(value)
-            elif parameter == "M1_pd":
-                valid = True ; M1_pd = float(value)
-            elif parameter == "M2_pd":
-                valid = True ; M2_pd = float(value)
-            elif parameter == "M3_pd":
-                valid = True ; M3_pd = float(value)
-            elif parameter == "M4_pd":
-                valid = True ; M4_pd = float(value)
-            elif parameter == "M1_bs":
-                valid = True ; M1_bs = float(value)
-            elif parameter == "M2_bs":
-                valid = True ; M2_bs = float(value)
-            elif parameter == "M3_bs":
-                valid = True ; M3_bs = float(value)
-            elif parameter == "M4_bs":
-                valid = True ; M4_bs = float(value)
-            elif parameter == "TTG_LP_frac":
-                valid = True ; TTG_LP_frac = float(value)
-            elif parameter == "TTG_MP_frac":
-                valid = True ; TTG_MP_frac = float(value)
-            elif parameter == "TTG_HP_frac":
-                valid = True ; TTG_HP_frac = float(value)
-            elif parameter == "fields_every_n_data":
-                valid = True ; fields_every_n_data = int(value)
             elif parameter == "initialize_ncells":
                 valid = True ; initialize_ncells = int(value)
             elif parameter == "cell_amplitude":
@@ -366,29 +297,17 @@ def get_parameters(filename,rank=0):
             elif parameter == "melt_position":
                 valid = True ; melt_position = str(value)
             elif parameter == "melt_extraction":
-                valid = True ; melt_extraction = str(value)
-            elif parameter == "melt_test_mode":
-                valid = True ; melt_test_mode = str2bool(value)
+                valid = True ; melt_extraction = str(value) 
             elif parameter == "rho_r_file":
                 valid = True ; rho_r_file = str(value)
             elif parameter == "rho_b_file":
                 valid = True ; rho_b_file = str(value)
-            elif parameter == "rho1":
-                valid = True ; rho1 = float(value)
-            elif parameter == "rho2":
-                valid = True ; rho2 = float(value)
-            elif parameter == "rho1_p":
-                valid = True ; rho1_p = float(value)
-            elif parameter == "rho2_p":
-                valid = True ; rho2_p = float(value)
-            elif parameter == "rho3_p":
-                valid = True ; rho3_p = float(value)
-            elif parameter == "rho12":
-                valid = True ; rho12 = float(value)
-            elif parameter == "theta_u":
-                valid = True ; theta_u = float(value)
-            elif parameter == "theta_d":
-                valid = True ; theta_d = float(value)
+            elif parameter == "rho_p_TTG" or parameter == "rho1_p":
+                valid = True ; rho_p_TTG = float(value) ; rho1_p = rho_p_TTG
+            elif parameter == "rho_p_peridotite" or parameter == "rho2_p":
+                valid = True ; rho_p_peridotite = float(value) ; rho2_p = rho_p_peridotite
+            elif parameter == "rho_p_basalt" or parameter == "rho3_p":
+                valid = True ; rho_p_basalt = float(value) ; rho3_p = rho_p_basalt
             elif parameter == "A":
                 valid = True ; A = float(value)
             elif parameter == "interface_thickness":
@@ -397,10 +316,26 @@ def get_parameters(filename,rank=0):
                 valid = True ; nu_r_factor = float(value)
             elif parameter == "beta_g_factor": 
                 valid = True ; beta_g_factor = float(value)
-            elif parameter == "g_comp_factor":
+            elif parameter == "g_comp_factor": 
                 valid = True ; g_comp_factor = float(value)
-            elif parameter == "basalt_depth_p":
-                valid = True ; basalt_depth_p = float(value)
+            elif parameter == "w_diagonal": 
+                valid = True ; w_diagonal = float(value)
+            elif parameter == "theta_u": 
+                valid = True ; theta_u = float(value)
+            elif parameter == "theta_d": 
+                valid = True ; theta_d = float(value)
+            elif parameter == "theta_l": 
+                valid = True ; theta_l = float(value)
+            elif parameter == "theta_r": 
+                valid = True ; theta_r = float(value)
+            elif parameter == "rayleigh_taylor_option": 
+                valid = True ; rayleigh_taylor_option = str(value)
+            elif parameter == "perturbation_size": 
+                valid = True ; perturbation_size = float(value)
+            elif parameter == "depth_light": 
+                valid = True ; depth_light = float(value)
+            elif parameter == "optimize_nu": 
+                valid = True ; optimize_nu = str2bool(value)
 
 #-------------------------------------------------------------------------------
 #           Boundary condition specifications
@@ -472,8 +407,6 @@ def get_parameters(filename,rank=0):
                 valid = True ; data_bits = int(value)
             elif parameter == "shifted_distribution":
                 valid = True ; shifted_distribution = str2bool(value) ;
-            elif parameter == "pre_streaming_BC":
-                valid = True ; pre_streaming_BC = str2bool(value) ;
 
 #-------------------------------------------------------------------------------
 #           Output specifiations
@@ -494,6 +427,8 @@ def get_parameters(filename,rank=0):
 
             elif parameter == "Inc_plots":
                 valid = True ; Inc_plots = str(value)
+            elif parameter == "Inc_bmk":
+                valid = True ; Inc_bmk = str(value)
             elif parameter == "Inc_data":
                 valid = True ; Inc_data = str(value)
             elif parameter == "Inc_mach":
@@ -531,8 +466,6 @@ def get_parameters(filename,rank=0):
                 valid = True ; plot_nu_kinematic = str2bool(value)
             elif parameter == "plot_nu_dynamic":
                 valid = True ; plot_nu_dynamic = str2bool(value)
-            elif parameter == "plot_Ra":
-                valid = True ; plot_Ra = str2bool(value)
             elif parameter == "plot_vectors":
                 valid = True ; plot_vectors = str2bool(value)
             elif parameter == "plot_Tau":
@@ -561,10 +494,6 @@ def get_parameters(filename,rank=0):
                  valid = True ; plot_ce_HP = str2bool(value)
             elif parameter == "plot_ce_pd":
                 valid = True ; plot_ce_pd = str2bool(value)
-            elif parameter == "plot_de_pd":
-                valid = True ; plot_de_pd = str2bool(value)
-            elif parameter == "plot_de_bs":
-                valid = True ; plot_de_bs = str2bool(value)
             elif parameter == "plot_ce_bs":
                 valid = True ; plot_ce_bs = str2bool(value)
             elif parameter == "plot_T_sol_pd":

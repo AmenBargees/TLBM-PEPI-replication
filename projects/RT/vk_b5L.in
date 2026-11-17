@@ -66,17 +66,17 @@ RKTLBM               = True        # RKTLBM
 collision            = True        # 2nd collision term on/off
 melt_time            = 1e10        # Beginning of melt extraction 
 melt_position        = surface     # Only if archean2. Where is melt added: 1) surface 2) insitu 3) False
-rho_r_file           = vk_rho_r    # vK97 IC npy (generated; canonical 0.2 layer, 0.02 cos perturbation)
-rho_b_file           = vk_rho_b    # vK97 IC npy (generated)
-rho1_p               = 1000        # Physical density TTG (red fluid for RKTLBM)
-rho2_p               = 1010        # Physical density peridotite = (1-L) fraction of blue fluid
-rho3_p               = 1010        # Physical density basalt     =    L  fraction of blue fluid
+rho_r_file           = rayleigh-taylor  # RKTLBM input file for red
+rho_b_file           = rayleigh-taylor  # RKTLBM input file for blue
+rho_p_TTG            = 1000        # Physical density TTG (red fluid for RKTLBM)
+rho_p_peridotite     = 1010        # Physical density peridotite = (1-L) fraction of blue fluid
+rho_p_basalt         = 1010        # Physical density basalt     =    L  fraction of blue fluid
 A                    = 0           # Surface tension parameter
 theta_u              = 0           # Upper boundary wetting angle
 theta_d              = 0           # Lower boundary wetting angle
-theta_u              = 0           # Upper boundary wetting angle
-theta_d              = 0           # Lower boundary wetting angle
-# w_diagonal (not in this version)   # was: w_diagonal           = 0.3         # Diagonal weight color gradient
+theta_l              = 0           # Upper boundary wetting angle
+theta_r              = 0           # Lower boundary wetting angle
+w_diagonal           = 0.3         # Diagonal weight color gradient
 interface_thickness  = 0.85        # Interface thickness parameter 
 nu_r_factor          = 1           # Red viscosity relative to blue viscosity
 beta_g_factor        = 0           # If RKTLBM and zero no convection

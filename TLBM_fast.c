@@ -51,7 +51,7 @@ void TLBM_fast32(
     FLOAT rho[ny][nz][nx], FLOAT eta[ny][nz][nx], FLOAT u[ny][nz][D][nx],
     FLOAT f_last[ny][nz][na][nx], FLOAT f[ny][nz][na][nx], FLOAT g_last[ny][nz][na][nx], FLOAT g[ny][nz][na][nx],
     int x_xa[na][nx], int y_ya[na][ny], int z_za[na][nz],
-    FLOAT nu_f[nz], FLOAT tau_g[nz], FLOAT tau_h[nz], FLOAT beta_g[nz],
+    FLOAT nu_f[nz], FLOAT tau_g[nz], FLOAT tau_h[nz], FLOAT beta_g,
     char *temperature, char *rheology, char *nu_formula,
     FLOAT nu_min, FLOAT nu_min_cap, FLOAT nu_max_cap, FLOAT gamma_T, FLOAT Tau_y[nz], FLOAT N[nz], FLOAT Delta_g[na],
     FLOAT nu_f_last[ny][nz][nx], FLOAT tau_f_last[ny][nz][nx], FLOAT nu_total[ny][nz][nx],
@@ -104,7 +104,7 @@ void TLBM_fast64(
     FLOAT rho[ny][nz][nx], FLOAT eta[ny][nz][nx], FLOAT u[ny][nz][D][nx],
     FLOAT f_last[ny][nz][na][nx], FLOAT f[ny][nz][na][nx], FLOAT g_last[ny][nz][na][nx], FLOAT g[ny][nz][na][nx],
     int x_xa[na][nx], int y_ya[na][ny], int z_za[na][nz],
-    FLOAT nu_f[nz], FLOAT tau_g[nz], FLOAT tau_h[nz], FLOAT beta_g[nz],
+    FLOAT nu_f[nz], FLOAT tau_g[nz], FLOAT tau_h[nz], FLOAT beta_g,
     char *temperature, char *rheology, char *nu_formula,
     FLOAT nu_min, FLOAT nu_min_cap, FLOAT nu_max_cap, FLOAT gamma_T, FLOAT Tau_y[nz], FLOAT N[nz], FLOAT Delta_g[na],
     FLOAT nu_f_last[ny][nz][nx], FLOAT tau_f_last[ny][nz][nx], FLOAT nu_total[ny][nz][nx],
@@ -166,8 +166,6 @@ void RKTLBM_strmac32(
      FLOAT ff_b[ny][nz][na][nx], FLOAT f_b[ny][nz][na][nx],
      char  *rheology,
      FLOAT hh[ny][nz][na][nx], FLOAT h[ny][nz][na][nx],
-     FLOAT hhd[ny][nz][na][nx], FLOAT hd[ny][nz][na][nx],
-     FLOAT hhb[ny][nz][na][nx], FLOAT hb[ny][nz][na][nx],
      bool  boundary_l, int xl, int naL, int nbL, int aL[na], int aiL[na],
      bool  boundary_r, int xr, int naR, int nbR, int aR[na], int aiR[na],
      bool  boundary_b, int yb, int naB, int nbB, int aB[na], int aiB[na],
@@ -175,6 +173,7 @@ void RKTLBM_strmac32(
      bool  boundary_u, int zu, int naU, int nbU, int aU[na], int aiU[na],
      bool  boundary_d, int zd, int naD, int nbD, int aD[na], int aiD[na],
      FLOAT BC_r_wetting_u, FLOAT BC_b_wetting_u, FLOAT BC_r_wetting_d, FLOAT BC_b_wetting_d,
+     FLOAT BC_r_wetting_l, FLOAT BC_b_wetting_l, FLOAT BC_r_wetting_r, FLOAT BC_b_wetting_r,
      bool  shifted_distribution,
      FLOAT rho_r_init[ny][nz][nx], FLOAT rho_b_init[ny][nz][nx],
      int   rank
@@ -205,8 +204,6 @@ void RKTLBM_strmac64(
      FLOAT ff_b[ny][nz][na][nx], FLOAT f_b[ny][nz][na][nx],
      char  *rheology,
      FLOAT hh[ny][nz][na][nx], FLOAT h[ny][nz][na][nx],
-     FLOAT hhd[ny][nz][na][nx], FLOAT hd[ny][nz][na][nx],
-     FLOAT hhb[ny][nz][na][nx], FLOAT hb[ny][nz][na][nx],
      bool  boundary_l, int xl, int naL, int nbL, int aL[na], int aiL[na],
      bool  boundary_r, int xr, int naR, int nbR, int aR[na], int aiR[na],
      bool  boundary_b, int yb, int naB, int nbB, int aB[na], int aiB[na],
@@ -214,6 +211,7 @@ void RKTLBM_strmac64(
      bool  boundary_u, int zu, int naU, int nbU, int aU[na], int aiU[na],
      bool  boundary_d, int zd, int naD, int nbD, int aD[na], int aiD[na],
      FLOAT BC_r_wetting_u, FLOAT BC_b_wetting_u, FLOAT BC_r_wetting_d, FLOAT BC_b_wetting_d,
+     FLOAT BC_r_wetting_l, FLOAT BC_b_wetting_l, FLOAT BC_r_wetting_r, FLOAT BC_b_wetting_r,
      bool  shifted_distribution,
      FLOAT rho_r_init[ny][nz][nx], FLOAT rho_b_init[ny][nz][nx],
      int   rank
@@ -253,6 +251,7 @@ void RKTLBM_rest32(
      FLOAT FF[D][ny][nz][nx],
      FLOAT A, FLOAT B[na], FLOAT interface_thickness, FLOAT g_comp,
      FLOAT BC_r_wetting_u, FLOAT BC_b_wetting_u, FLOAT BC_r_wetting_d, FLOAT BC_b_wetting_d,
+     FLOAT BC_r_wetting_l, FLOAT BC_b_wetting_l, FLOAT BC_r_wetting_r, FLOAT BC_b_wetting_r,
      char *rheology, char *temperature, char *nu_formula, 
      FLOAT tau_h[nz],
      FLOAT nu_f_r[nz], FLOAT nu_f_b[nz], FLOAT nu_star,
@@ -261,8 +260,6 @@ void RKTLBM_rest32(
      FLOAT T_nd[ny][nz][nx],
      FLOAT act_E[nz], FLOAT act_V[nz], FLOAT Delta_eta_array[nz], FLOAT eta_p, FLOAT DR_2, FLOAT T0_p, FLOAT dT_p, FLOAT z_nd[ny][nz][nx],
      FLOAT h[ny][nz][na][nx], FLOAT L_ed[ny][nz][nx],
-     FLOAT hd[ny][nz][na][nx], FLOAT D_ed[ny][nz][nx],
-     FLOAT hb[ny][nz][na][nx], FLOAT D_eb[ny][nz][nx],
      FLOAT P0[ny][nz][nx],FLOAT cumulative_extracted_pd[ny][nz][nx], FLOAT cumulative_extracted_bs[ny][nz][nx],
      FLOAT cumulative_extracted_LP[ny][nz][nx], FLOAT cumulative_extracted_MP[ny][nz][nx], FLOAT cumulative_extracted_HP[ny][nz][nx], 
      FLOAT P1_thresh, FLOAT P2_thresh, 
@@ -284,8 +281,7 @@ void RKTLBM_rest32(
      FLOAT eta_u[ny][nx], FLOAT eta_d[ny][nx],
      bool  shifted_distribution,
      FLOAT rho_r_init[ny][nz][nx], FLOAT rho_b_init[ny][nz][nx],
-     int rank,
-     FLOAT lp_gate, FLOAT mp_gate, FLOAT hp_gate
+     int rank
 )
 {
 #include "TLBM_rest_kernel.c"
@@ -320,6 +316,7 @@ void RKTLBM_rest64(
      FLOAT FF[D][ny][nz][nx],
      FLOAT A, FLOAT B[na], FLOAT interface_thickness, FLOAT g_comp,
      FLOAT BC_r_wetting_u, FLOAT BC_b_wetting_u, FLOAT BC_r_wetting_d, FLOAT BC_b_wetting_d,
+     FLOAT BC_r_wetting_l, FLOAT BC_b_wetting_l, FLOAT BC_r_wetting_r, FLOAT BC_b_wetting_r,
      char *rheology, char *temperature, char *nu_formula,
      FLOAT tau_h[nz],
      FLOAT nu_f_r[nz], FLOAT nu_f_b[nz], FLOAT nu_star,
@@ -328,8 +325,6 @@ void RKTLBM_rest64(
      FLOAT T_nd[ny][nz][nx],
      FLOAT act_E[nz], FLOAT act_V[nz], FLOAT Delta_eta_array[nz], FLOAT eta_p, FLOAT DR_2, FLOAT T0_p, FLOAT dT_p, FLOAT z_nd[ny][nz][nx],
      FLOAT h[ny][nz][na][nx], FLOAT L_ed[ny][nz][nx],
-     FLOAT hd[ny][nz][na][nx], FLOAT D_ed[ny][nz][nx],
-     FLOAT hb[ny][nz][na][nx], FLOAT D_eb[ny][nz][nx],
      FLOAT P0[ny][nz][nx],FLOAT cumulative_extracted_pd[ny][nz][nx], FLOAT cumulative_extracted_bs[ny][nz][nx],
      FLOAT cumulative_extracted_LP[ny][nz][nx], FLOAT cumulative_extracted_MP[ny][nz][nx], FLOAT cumulative_extracted_HP[ny][nz][nx],
      FLOAT P1_thresh, FLOAT P2_thresh,
@@ -351,8 +346,7 @@ void RKTLBM_rest64(
      FLOAT eta_u[ny][nx], FLOAT eta_d[ny][nx],
      bool  shifted_distribution,
      FLOAT rho_r_init[ny][nz][nx], FLOAT rho_b_init[ny][nz][nx],
-     int rank,
-     FLOAT lp_gate, FLOAT mp_gate, FLOAT hp_gate
+     int rank
 )
 {
 #include "TLBM_rest_kernel.c"

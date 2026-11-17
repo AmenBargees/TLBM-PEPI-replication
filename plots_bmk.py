@@ -52,7 +52,7 @@ def plot_graph_line(title,filename,x_i,y_i,xx,yy,xlab,ylab):
     full_filename = dir_path + filename + '.png'
     try: os.remove(full_filename)
     except OSError: pass
-    plt.savefig(full_filename, bbox_inches='tight')
+    plt.savefig(full_filename)
     plt.close()
     print("Saved file = ",full_filename)
 
@@ -72,8 +72,10 @@ elif len(argv) == 3:
     script, PROJECT, RUN = argv
     VALID = True
 else:
-    with open("PROJECT") as f: PROJECT = f.read().strip()
-    with open("RUN")     as f: RUN     = f.read().strip()
+    f_project = open("PROJECT")
+    f_run     = open("RUN")
+    PROJECT = np.loadtxt(f_project)
+    RUN     = np.loadtxt(f_run)
 
 if not VALID or HELP == "-h":
 
@@ -118,45 +120,163 @@ bmk_file   = in_dir   + RUN + ".bmk"
 
 #   Exit if the project input directory or input run file does not exist
 
-rank = 0
-
-if not os.path.exists(bmk_file):
-    print("ERROR: benchmark file %s does not exist!" %(bmk_file),file=sys.stderr,flush=True)
+if not os.path.exists(in_file):
+    if rank == 0:
+        print("ERROR: input file %s does not exist!" %(in_file),file=sys.stderr,flush=True)
     exit()
 
-os.makedirs(plot_bmk_dir, exist_ok=True)
+#   Exit if the project input directory and input run file does not exist
 
-in_dir_path = "./projects/" + PROJECT + "/"
-dir_path    = "./projects/" + PROJECT + "/" + RUN + "/plots_bmk/"
-os.makedirs(dir_path, exist_ok=True)
+if not os.path.exists(bmk_file):
+    if rank == 0:
+        print("ERROR: benchmark file %s does not exist!" %(bmk_file),file=sys.stderr,flush=True)
+    exit()
 
-sec_y = 365.25*24*3600
-sec_my = 1e6 * sec_y
+#   Make any required output directories
 
-BC_base = "runs"
-title   = "PROJECT: " + PROJECT + "  RUN: " + RUN
+if rank == 0:
+    if not os.path.exists(plot_bmk_dir):  os.mkdir(plot_bmk_dir)
 
-# Read runs from RUNS file (multiple) or fall back to single RUN
-if os.path.exists("RUNS"):
-    with open("RUNS") as f:
-        runs = f.read().split()
+# Get the parameters from the input file
+
+import get_parameters
+# Get the parameters for the run including plot choices and scales
+
+get_parameters(in_file)
+from get_parameters import *
+
+if ny == 1:
+    D = 2
 else:
-    runs = [RUN]
+    D = 3
 
-cols = ["blue", "aqua", "orange", "red", "green", "purple", "brown", "pink"][:len(runs)]
-labs = runs
+#-------------------------------------------------------------------------------
+# Initialize for the desired geometry
+#-------------------------------------------------------------------------------
 
-# Label map for y-axis
-what_labels = {
-    "Re_vrms":   r'$Re_{vrms}$',
-    "Re_vrms_l": r'$Re_{vrms,l}$',
-    "Re_l":      r'$Re_l$',
-    "Nu_pm":     r'$Nu$',
-    "Nu_gm":     r'$Nu^*$',
-    "vrms_l":    r'$v_{rms,l}$',
-    "u_l":       r'$u_l$',
-    "dt":        r'$\Delta t$',
-}
+# Initialize for the desired geometry
+
+if geometry == "annular" or (geometry == "spherical" and D == 2):
+    L_l,nz,R_p,L_p,radii,thetas,nu_factor = get_annular_geometry(R_p,L_p,theta1,theta2,nx,rank=0)
+    if rank == 0:
+        plot_annular_lattice(nz,radii,nx,theta1,theta2,annulus_interval)
+elif geometry == "spherical" and D == 3:
+    if rank == 0:
+        print()
+        print("ERROR: Spherical 3D geometry not yet implemented in TLBM_fast, exiting!",flush=True)
+        print()
+    exit()
+else:
+    R_p,L_p = get_R_and_L(R_p,L_p) # Get R_p and L_p from descriptive names if needed
+    L_l     = nz-1
+
+dx_p     = L_p/L_l       # Lattice spacing in physical units
+
+#-------------------------------------------------------------------------------
+# Calculate the lattice viscosity, thermal diffusivity, gravity and
+# physical time step, and update Ra_p and Pr if unspecified
+#-------------------------------------------------------------------------------
+
+time_per_timestep, timescale_time_per_timestep, error = timevalue("time_per_timestep",time_per_timestep)
+time_per_timestep = timevalue_to_secs(time_per_timestep,timescale_time_per_timestep) # Convert to secs if timescale != unspecified
+
+Ra_p, Pr_p, eta_p, nu_p, ka_p, Ra_l, Pr_l, g_l, nu_l, ka_l, dt_p, dt_dt0 = get_lattice_viscosity(state, power_correction,Ra,Pr,g_p,beta_p,dT_p,L_p,eta_p,rho_p,ka_p,g_l,L_l,nu_l,nu_l_min,time_per_timestep,gamma_T,rheology,rank)
+
+#-------------------------------------------------------------------------------
+# Get nt, and the plot and data time increments
+#-------------------------------------------------------------------------------
+
+error = False
+nt           , timescale_nt           , error = timevalue("nt"       ,nt       ,error)
+Inc_data     , timescale_Inc_data     , error = timevalue("Inc_data" ,Inc_data ,error)
+
+nt            = timevalue_to_timesteps(nt      ,timescale_nt       ,dt_p)
+Inc_data      = timevalue_to_timesteps(Inc_data,timescale_Inc_data ,dt_p)
+
+run_title   = str2str(run_title)
+description = str2str(description)
+
+rank = 0
+
+#==============================================================
+# Check the directories exist and if necessary make them
+
+in_dir_path   = "./projects/bench2/"
+dir_path      = "./bench_plots/"
+
+vrms_max = 7.0
+option = 8
+if option == 1:
+    labs = [ r'$Ra=10^4$', r'$Ra=10^5$', r'$Ra=10^6$', r'$Ra=10^7$'] 
+    runs = ["Ra4Pr3", "Ra5Pr3", "Ra6Pr3", "Ra7Pr3"]
+    BC_base = "ufs_dfx"
+    title         = "BC: free slip (upper), fixed (lower)"
+elif option == 2:
+    labs = [ r'$Ra=10^4$', r'$Ra=10^5$', r'$Ra=10^6$', r'$Ra=10^7$', r'$Ra=10^8$', r'$Ra=10^9$']
+    runs = ["Ra4Pr3_fs", "Ra5Pr3_fs", "Ra6Pr3_fs", "Ra7Pr3_fs", "Ra8Pr3_fs", "Ra9Pr3_fs"]
+    BC_base       = "ufs_dfs"
+    title         = "BC: free slip (upper & lower)"
+elif option == 3:
+    labs = [ r'$Ra=10^4$', r'$Ra=10^5$', r'$Ra=10^6$']
+    cols = [ "blue"      , "green"     , "red"       ]
+    runs = ["Ra4Pr1b", "Ra5Pr1b"       ,"Ra6Pr1b"    ]
+    BC_base       = "pd_fx"
+    Pr = 1
+    title         = "BC: periodic (sides), fixed (upper/lower)"
+    vrms = "physical"
+    labs = [ r'$Ra=10^4,\ Pr=1$', r'$Ra=10^4,\ Pr=10$', r'$Ra=10^4,\ Pr=100$',  r'$Ra=10^4,\ Pr=1000$']
+    cols = [ "blue"  , "green"   , "orange"  , "red"]
+    runs = ["Ra4Pr1c", "Ra4Pr10c","Ra4Pr100c", "Ra4Pr1000c"   ]
+
+    labs = [ r'$Ra=10^4,\ Pr=1000$', r'$Ra=10^5,\ Pr=1000$', r'$Ra=10^6,\ Pr=1000$', r'$Ra=10^7,\ Pr=1000$']
+    runs = ["Ra4Pr1000f","Ra5Pr1000f","Ra6Pr1000f","Ra7Pr1000f"]
+
+    runs = runs[:3]
+elif option == 4:
+    cols = [ "blue"  , "aqua", "orange"  , "red"]
+    BC_base       = "pd_fx"
+    title   = "BC: periodic (sides), fixed (upper/lower)"
+    labs = [ r'$Ra=10^4,\ Pr=1000$', r'$Ra=10^5,\ Pr=1000$', r'$Ra=10^6,\ Pr=1000$',r'$Ra=10^7,\ Pr=1000$']
+    runs = ["Ra4Pr1000","Ra5Pr1000","Ra6Pr1000","Ra7Pr1000"]
+elif option == 5:
+    in_dir_path   = "./projects/bench3/"
+    cols = [ "blue"  , "aqua", "orange"  , "red"]
+    BC_base       = "Pr1_fx"
+    title   = "BC: fixed"
+    labs = [ r'$Ra=10^4,\ Pr=1$', r'$Ra=10^5,\ Pr=1$', r'$Ra=10^6,\ Pr=1$',r'$Ra=10^7,\ Pr=1$']
+    runs = ["Ra4Pr1fx","Ra5Pr1fx","Ra6Pr1fx","Ra7Pr1fx"]
+elif option == 6:
+    in_dir_path   = "./projects/bench_annular/"
+    cols = [ "blue"  , "aqua", "orange"  , "red"]
+    BC_base       = "annular_fx"
+    title   = "BC: fixed"
+    labs = [ r'$Ra=10^4$' + ", fixed", r'$Ra=10^5$' + ", fixed", r'$Ra=10^6$' + ", fixed",r'$Ra=10^7' + ",fixed"]
+    runs = ["Ra4fx","Ra5fx","Ra6fx","Ra7fx"]
+elif option == 7:
+    in_dir_path   = "./projects/bench_annular/"
+    cols = [ "blue"  , "aqua", "orange"  , "red"]
+    BC_base       = "annular_fr"
+    title   = "BC: free"
+    labs = [ r'$Ra=10^4$' + ", free", r'$Ra=10^5$' + ", free", r'$Ra=10^6$' + ", free",r'$Ra=10^7' + ",free"]
+    runs = ["Ra4fr","Ra5fr","Ra6fr","Ra7fr"]
+elif option == 8:
+    in_dir_path   = "./projects/bench_annular/"
+    cols = [ "blue"  , "aqua", "orange"  , "red"]
+    BC_base       = "annular_fr_Pr4"
+    title   = "BC: free"
+    labs = [ r'$Ra=10^4,\ Pr=10^4$' + ", free", r'$Ra=10^5,\ Pr=10^4$' + ", free", r'$Ra=10^6,\ Pr=10^4$' + ", free",r'$Ra=10^7,\ Pr=10^4' + ",free"]
+    runs = ["Ra4Pr4fr","Ra5Pr4fr","Ra6Pr4fr","Ra7Pr4fr"]
+
+R_p   = 6.378e6
+L_p   = 2.9e6
+factor_u = 1
+factor_d = R_p/L_p
+L_l = 511
+dx_p = 2.9e6/L_l
+sec_y = 365.25*24*3600
+cm_y_2_m_s = 1/(100*sec_y)
+
+Ra_Nu_base = "Ra_vs_Nu_" + BC_base
 
 # Declare arrays as a function of Ra
 
@@ -206,12 +326,8 @@ for iwhat in range(len(whats)):
 
         in_filename   = in_dir_path + base_filename + ".bmk"
 
-        if not os.path.exists(in_filename):
-            print(f"Skipping {base_filename}: {in_filename} not found")
-            continue
         f_bmk = open(in_filename)
         bmk   = np.loadtxt(f_bmk)
-        if bmk.ndim == 1: bmk = bmk[np.newaxis, :]
         nt    = bmk.shape[0]
 
         itime     = np.zeros(nt)
@@ -288,15 +404,15 @@ for iwhat in range(len(whats)):
             plt.ylim(0,5)
         if what == "Re_vrms_l":
             plt.ylim(0,2)
-    plt.xlabel(r'$t$ (My)', fontsize=10)
-    plt.ylabel(what_labels.get(what, what), fontsize=10)
+    plt.xlabel(r'My', fontsize=10)
+    plt.ylabel(what, fontsize=10)
     plt.legend(fontsize=10)
 
     filename      = dir_path + what + "_" + BC_base
     full_filename = filename + '.png'
     try: os.remove(full_filename)
     except OSError: pass
-    plt.savefig(full_filename, bbox_inches='tight')
+    plt.savefig(full_filename)
     plt.close()
     print("Saved file = ",full_filename)
 
@@ -339,19 +455,19 @@ for iwhat in range(len(whats)):
         elif what == "Nu_gm":
             f[i] = Nu_gm_s[i]
 
-    mask = (Ra_s > 0) & (f > 0)
-    if mask.sum() < 2:
-        print(f"Skipping Ra scaling fit for {what}: not enough data points")
-        continue
-    c1,c0 = np.polyfit(np.log10(Ra_s[mask]), np.log10(f[mask]), 1)
+    c1,c0 = np.polyfit(np.log10(Ra_s), np.log10(f), 1)
 
-    n_ok   = mask.sum()
-    x_data = np.log10(Ra_s[mask])
+    x_data = np.zeros(n_ra)
+    y_data = np.zeros(n_ra)
+    err    = np.zeros(n_ra)
+
+    e2 = 0.0
+    x_data = np.log10(Ra_s)
     y_data = c0 + c1*x_data
-    err    = y_data - np.log10(f[mask])
-    e2     = np.sum(err**2)
-    stddev = np.sqrt(e2/n_ok)
-    gamma  = c1
+    err = y_data - np.log10(f)
+    e2  = np.sum(err**2)
+    stddev = np.sqrt(e2/n_ra)
+    gamma = c1
     print("gamma = ",gamma,", Log_Ra vs Log_" + what + ", error = ",stddev)
-    filename  = "log_Ra_vs_log_" + what + "_" + BC_base
-    plot_graph_line(title,filename,f[mask],Ra_s[mask],10**x_data,10**y_data,r'$Ra$',what_labels.get(what,what))
+    filename  = "log_Ra_vs_log_" + what + "_" + BC_base 
+    plot_graph_line(title,filename,f,Ra_s,10**x_data,10**y_data,r'$Ra$',what)

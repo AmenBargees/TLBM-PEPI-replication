@@ -698,7 +698,7 @@
 //---------------------------------------------------------------
 
                 for(x=startx;x<endx;x+=incx) {
-                    gi[x] = rho[y][z][x] * beta_g[z] * eta[y][z][x];
+                    gi[x] = rho[y][z][x] * beta_g * eta[y][z][x];
                     if (strcmp(rheology,"archean2") == 0) {
                         P_garnet_in    = 0.014 * T[y][z][x]  - 5.4;
                         P_plag_out     = 0.020 * T[y][z][x]  + 4;
@@ -738,7 +738,7 @@
                     double _sum_f = 0;
                     for (int _aa = 0; _aa < na; _aa++) _sum_f += f[y][z][_aa][_prx];
                     printf("DBG fast   call=%lld stage=BUOY     y=%d z=%d x=%d gi=%.9e sum_f=%.9e beta_g=%.9e\n",
-                           _dbg_call_fast, y, z, _prx, gi[_prx], _sum_f, beta_g[z]);
+                           _dbg_call_fast, y, z, _prx, gi[_prx], _sum_f, beta_g);
                 }
 #endif
 //---------------------------------------------------------------

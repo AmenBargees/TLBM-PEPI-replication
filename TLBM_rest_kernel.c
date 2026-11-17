@@ -8,17 +8,6 @@
 #define A2_HCOLL     1   // h relaxation in collision (needs A2_HEQ)
 #define A2_MELT      1   // melt-extraction block (needs A2_LED_MACRO)
 #define A2_BUOY      1   // archean2 density branch in buoyancy (needs A2_MELT)
-#define TAU_HD     0.52
-#ifndef RECOLOR_HD
-#define RECOLOR_HD 0   // DISABLED: LK recoloring spinodally decomposes the continuous depletion field (smoke A/B 2026-11-09); FCT-style limiter is the open design item
-#ifndef BETA_HD
-#define BETA_HD 0.05   // segregation strength for hd/hb, sized against TAU_HD diffusivity
-#endif
-#endif  // relaxation time of the advected-depletion scalars hd/hb.
-                         // tau_h ~ 0.5 is dispersive for the spiky melt sources and
-                         // lets the depletion moment oscillate negative, which holds
-                         // the melt gate open and runs away; 0.56 adds just enough
-                         // diffusion to damp the oscillation.
 //-------------------------------------------------------------------------
     int   incx, startx, endx, starty, endy, startz, endz;
     int   x, y, z, a, d, i, j, xx_xa, yy_ya, zz_za;
@@ -44,20 +33,19 @@
     FLOAT weight_r[nx], weight_b[nx];
     FLOAT f_r_neq[na][nx], f_b_neq[na][nx];
     FLOAT h_eq[na][nx],  h_neq[na][nx], g_neq[na][nx];
-    FLOAT hd_eq[na][nx], hd_neq[na][nx], hb_eq[na][nx], hb_neq[na][nx];
-    double strain_rate[nx], S[D][D][nx], S_factor[nx], Tau[nx];
-    double nu_f[nx], nu_linear[nx], nu_plastic[nx], nu_total[nx];
-    double P[nx], T[nx], T_K[nx];
-    double gas_C, ref_K, max_val, arg[nx];
-    double eqn1_sol_bs, eqn2_sol_bs, eqn3_sol_bs;
-    double eqn1_liq_bs, eqn2_liq_bs;
-    double T_solidus_bs, T_liquidus_bs, T_solidus_pd, T_liquidus_pd;
-    double M_pd[nx], M_bs[nx];
+    FLOAT strain_rate[nx], S[D][D][nx], S_factor[nx], Tau[nx];
+    FLOAT nu_f[nx], nu_linear[nx], nu_plastic[nx], nu_total[nx];
+    FLOAT P[nx], T[nx], T_K[nx];
+    FLOAT gas_C, ref_K, max_val, arg[nx];
+    FLOAT eqn1_sol_bs, eqn2_sol_bs, eqn3_sol_bs;
+    FLOAT eqn1_liq_bs, eqn2_liq_bs;
+    FLOAT T_solidus_bs, T_liquidus_bs, T_solidus_pd, T_liquidus_pd;
+    FLOAT M_pd[nx], M_bs[nx];
     FLOAT M_ext_bs[ny][nz][nx];
-    double M0_bs, M0_pd;
-    double L_den[nx];
-    double P_garnet_in[nx], P_plag_out[nx];
-    double coef_phase_bs[nx], coef_res_bs [nx], coef_phase_pd[nx], coef_res_pd[nx];
+    FLOAT M0_bs, M0_pd;
+    FLOAT L_den[nx];
+    FLOAT P_garnet_in[nx], P_plag_out[nx];
+    FLOAT coef_phase_bs[nx], coef_res_bs [nx], coef_phase_pd[nx], coef_res_pd[nx];
     FLOAT rho_solid_pd [ny][nz][nx], rho_solid_bs[ny][nz][nx], rho_ext_pd[ny][nz][nx];
     bool  T1_cond, P1_cond, mask_lpttg, mask_mpttg, LP_TTG, MP_TTG;
     bool  T2_cond, P2_cond, mask_hpttg, HP_TTG;
@@ -107,103 +95,36 @@
     for(y=0;y<ny;y++) {
         if (boundary_u && zedge == 1) {
             for(x=0;x<nx;x++) {
-                /* BC_r_wetting < 0 signals neutral (zero-gradient) ghosts:
-                   the fixed 50/50 wetting split (theta = 90) acts as a color
-                   SOURCE wherever the local red fraction differs from 1/2
-                   (red/ce_bs grew 113 -> 124% over 110 My in M1_hpc). */
-                if (BC_r_wetting_u < 0) {
-                    rho_r[y][zu-1][x] = rho_r[y][zu][x];
-                    rho_b[y][zu-1][x] = rho_b[y][zu][x];
-                } else {
-                    tmp               = rho_r[y][zu][x] + rho_b[y][zu][x];
-                    rho_r[y][zu-1][x] = tmp * BC_r_wetting_u;
-                    rho_b[y][zu-1][x] = tmp * BC_b_wetting_u;
-                }
+                tmp               = rho_r[y][zu][x] + rho_b[y][zu][x];
+                rho_r[y][zu-1][x] = tmp * BC_r_wetting_u;
+                rho_b[y][zu-1][x] = tmp * BC_b_wetting_u;
             }
         }
         if (boundary_d && zedge == 1) {
             for(x=0;x<nx;x++) {
-                if (BC_r_wetting_d < 0) {
-                    rho_r[y][zd+1][x] = rho_r[y][zd][x];
-                    rho_b[y][zd+1][x] = rho_b[y][zd][x];
-                } else {
-                    tmp               = rho_r[y][zd][x] + rho_b[y][zd][x];
-                    rho_r[y][zd+1][x] = tmp * BC_r_wetting_d;
-                    rho_b[y][zd+1][x] = tmp * BC_b_wetting_d;
-                }
+                tmp               = rho_r[y][zd][x] + rho_b[y][zd][x];
+                rho_r[y][zd+1][x] = tmp * BC_r_wetting_d;
+                rho_b[y][zd+1][x] = tmp * BC_b_wetting_d;
             }
         }
         if (boundary_l && xedge == 1) {
             for(z=0;z<nz;z++) {
                 tmp               = rho_r[y][z][xl] + rho_b[y][z][xl];
-                rho_r[y][z][xl-1] = tmp * BC_r_wetting_u;
-                rho_b[y][z][xl-1] = tmp * BC_b_wetting_u;
+                rho_r[y][z][xl-1] = tmp * BC_r_wetting_l;
+                rho_b[y][z][xl-1] = tmp * BC_b_wetting_l;
             }
         }
         if (boundary_r && xedge == 1) {
             for(z=0;z<nz;z++) {
                 tmp               = rho_r[y][z][xr] + rho_b[y][z][xr];
-                rho_r[y][z][xr+1] = tmp * BC_r_wetting_d;
-                rho_b[y][z][xr+1] = tmp * BC_b_wetting_d;
+                rho_r[y][z][xr+1] = tmp * BC_r_wetting_r;
+                rho_b[y][z][xr+1] = tmp * BC_b_wetting_r;
             }
         }
     }
 //---------------------------------------------------------------
 //  Start of loops to do calculations
 //---------------------------------------------------------------
-//---------------------------------------------------------------
-//  Advected depletion D_ed/D_eb: van-Leer-limited upwind advection
-//  (2D). Replaces the hd/hb population transport. A stationary
-//  parcel holds its depletion EXACTLY (zero flux at u = 0); a
-//  moving parcel carries it monotonically with sharp fronts.
-//  Lattice units dx = dt = 1; u is the macroscopic velocity.
-//  Wall faces carry zero flux; x ghosts come via the rho exchange.
-//---------------------------------------------------------------
-    if (D == 2 && strcmp(rheology,"archean2") == 0 && melt_extraction) {
-        int nmax = (nx > nz) ? nx : nz;
-        FLOAT Dold[nmax], slp[nmax];
-        for (int fld = 0; fld < 2; fld++) {
-            for(y=0;y<ny;y++) {
-                for(z=zu;z<=zd;z++) {              /* x sweep */
-                    for(x=0;x<nx;x++) Dold[x] = (fld==0)? D_ed[y][z][x] : D_eb[y][z][x];
-                    for(x=1;x<nx-1;x++) {
-                        FLOAT a1 = Dold[x+1]-Dold[x], b1 = Dold[x]-Dold[x-1];
-                        slp[x] = (a1*b1 > 0) ? 2*a1*b1/(a1+b1) : (FLOAT)0.0;
-                    }
-                    slp[0] = 0; slp[nx-1] = 0;
-                    for(x=1;x<nx-1;x++) {
-                        FLOAT ufm = (x==1)    ? u[y][z][0][x] : (FLOAT)0.5*(u[y][z][0][x-1]+u[y][z][0][x]);
-                        FLOAT ufp = (x==nx-2) ? u[y][z][0][x] : (FLOAT)0.5*(u[y][z][0][x]+u[y][z][0][x+1]);
-                        FLOAT Dm = (ufm > 0) ? Dold[x-1]+(FLOAT)0.5*slp[x-1]*(1-ufm)
-                                             : Dold[x]  -(FLOAT)0.5*slp[x]  *(1+ufm);
-                        FLOAT Dp = (ufp > 0) ? Dold[x]  +(FLOAT)0.5*slp[x]  *(1-ufp)
-                                             : Dold[x+1]-(FLOAT)0.5*slp[x+1]*(1+ufp);
-                        FLOAT val = Dold[x] - (ufp*Dp - ufm*Dm) + Dold[x]*(ufp-ufm);
-                        if (fld==0) D_ed[y][z][x] = val; else D_eb[y][z][x] = val;
-                    }
-                }
-                for(x=1;x<nx-1;x++) {              /* z sweep, zero-flux walls */
-                    for(z=zu;z<=zd;z++) Dold[z] = (fld==0)? D_ed[y][z][x] : D_eb[y][z][x];
-                    for(z=zu+1;z<zd;z++) {
-                        FLOAT a1 = Dold[z+1]-Dold[z], b1 = Dold[z]-Dold[z-1];
-                        slp[z] = (a1*b1 > 0) ? 2*a1*b1/(a1+b1) : (FLOAT)0.0;
-                    }
-                    slp[zu] = 0; slp[zd] = 0;
-                    for(z=zu;z<=zd;z++) {
-                        FLOAT ufm = (z==zu) ? (FLOAT)0.0 : (FLOAT)0.5*(u[y][z-1][D-1][x]+u[y][z][D-1][x]);
-                        FLOAT ufp = (z==zd) ? (FLOAT)0.0 : (FLOAT)0.5*(u[y][z][D-1][x]+u[y][z+1][D-1][x]);
-                        FLOAT Dm = (z==zu || ufm==0) ? (FLOAT)0.0 : ((ufm > 0) ? Dold[z-1]+(FLOAT)0.5*slp[z-1]*(1-ufm)
-                                                                               : Dold[z]  -(FLOAT)0.5*slp[z]  *(1+ufm));
-                        FLOAT Dp = (z==zd || ufp==0) ? (FLOAT)0.0 : ((ufp > 0) ? Dold[z]  +(FLOAT)0.5*slp[z]  *(1-ufp)
-                                                                               : Dold[z+1]-(FLOAT)0.5*slp[z+1]*(1+ufp));
-                        FLOAT val = Dold[z] - (ufp*Dp - ufm*Dm) + Dold[z]*(ufp-ufm);
-                        if (fld==0) D_ed[y][z][x] = val; else D_eb[y][z][x] = val;
-                    }
-                }
-            }
-        }
-    }
-
     for(y=starty;y<endy;y++) {
         edgey = (yedge==1&&(y==1||y==my-2)); // Set whether on y edge or not
         if(D==3) {
@@ -233,16 +154,14 @@
 
                for(x=startx;x<endx;x+=incx) {
                     eta[y][z][x] = g[y][z][na-1][x];
-                     if (A2_LED_MACRO && strcmp(rheology,"archean2") == 0) {
+                     if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_LED_MACRO && strcmp(rheology,"archean2") == 0)) {
                          L_ed[y][z][x] = h[y][z][na-1][x];
-                         /* D_ed/D_eb are prognostic scalars advected by the
-                            TVD pass above; they are no longer hd/hb moments. */
                      }
                }
                for(a=na-2;a>=0;a--) {
                     for(x=startx;x<endx;x+=incx) {
                         eta[y][z][x] += g[y][z][a][x];
-                        if (A2_LED_MACRO && strcmp(rheology,"archean2") == 0) {
+                         if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_LED_MACRO && strcmp(rheology,"archean2") == 0)) {
                             L_ed[y][z][x] += h[y][z][a][x];
                         }
                     }
@@ -250,14 +169,6 @@
 
                for(x=startx;x<endx;x+=incx) {
                    L_ed[y][z][x]  = max(0.0, min(1, L_ed[y][z][x]));
-                   D_ed[y][z][x]  = max(0.0, D_ed[y][z][x]);
-                   D_eb[y][z][x]  = max(0.0, D_eb[y][z][x]);
-                   if (A2_LED_MACRO && strcmp(rheology,"archean2") == 0) {
-                       /* Clamp advected depletion to the extraction cap and
-                          rescale the populations so the moment stays consistent */
-                       if (D_ed[y][z][x] > M4_pd) {D_ed[y][z][x] = M4_pd;}
-                       if (D_eb[y][z][x] > M4_bs) {D_eb[y][z][x] = M4_bs;}
-                   }
                    rho       [x]  = rho_r[y][z][x] + rho_b[y][z][x];
                    frac_r    [x]  = rho_r[y][z][x]/rho[x]; // Calculate red  fraction
                    frac_b    [x]  = rho_b[y][z][x]/rho[x]; // Calculate blue fraction
@@ -313,13 +224,10 @@
                         if ((P[x] < 5)) {T_liquidus_bs = eqn1_liq_bs;}
                         else {T_liquidus_bs = eqn2_liq_bs;}
                         // Peridotite Solidii and Liquidii from Denis Andrault Solidus and liquidus profiles of chondritic mantle
-                        // Solidus: Sizova et al. (2015) quadratic below 13 GPa, Andrault et al. (2011)
-                        // Simon-Glatzel fit above; the two curves join at ~13 GPa (1988 vs 1991 C).
-                        // Liquidus: Andrault at all P (1667 C at P=0, 4474 C at 130 GPa); the Sizova
-                        // linear 1799.85+114P is only calibrated shallow and diverges at depth.
-                        if (P[x] < 13.0) {T_solidus_pd = -5.1 * POW(P[x],2) + 133*P[x] + 1120.85;}
-                        else             {T_solidus_pd = (2045 * POW(1.0 + P[x]/92.0,(1/1.3))) - 273.15;}
-                        T_liquidus_pd          = (1940 * POW(1.0 + P[x]/29.0,(1/1.9))) - 273.15;
+                        T_solidus_pd           = (2045 * POW(P[x]/(92+1),(1/1.3))) - 273.15;
+                        T_liquidus_pd          = (1940 * POW(P[x]/(29+1),(1/1.9))) - 273.15;
+                        // T_solidus_pd           = -5.1 * POW(P[x],2) + 133*P[x] + 1120.85;
+                        // T_liquidus_pd          =  1799.85 + 114 * P[x];
                         // T/P conditions for LP-TTG  
                         T1_cond                = (T[x] > (760 - (60 * POW((P[x] - 1), 2)))) && (T[x] < (1000 - (150 * POW(((P[x] - 1.2) / 1.2), 2))));
                         P1_cond                = (P[x] > (-0.5 * ((T[x] - 870) / 220))) && (P[x] < (1.5 + (0.7 * ((T[x] - 700) / 200))));
@@ -342,15 +250,11 @@
                              M0_bs = ((T[x] - T_solidus_bs)/(T_liquidus_bs - T_solidus_bs));}
                         else if (T[x] > T_liquidus_bs) {M0_bs = 1;}
                         else {M0_bs = 0;}
-                        if ((M0_bs - D_eb[y][z][x]) > 0){M_bs[x] = M0_bs - D_eb[y][z][x];}
+                        if ((M0_bs - cumulative_extracted_bs[y][z][x]) > 0){M_bs[x] = M0_bs - cumulative_extracted_bs[y][z][x];}
                         else {M_bs[x] = 0;}
                         if  ((M_bs[x] > M2_bs) && ((M_bs[x] - M1_bs) < M4_bs) && ((M_bs[x] - M1_bs) > 0)) {
                               M_ext_bs[y][z][x] = ( M_bs[x] - M1_bs) * L_den[x] * mask_bs[y][z][x];}
                         else {M_ext_bs[y][z][x] = 0; }
-                        // never extract past the remaining advected capacity
-                        tmp = M4_bs - D_eb[y][z][x];
-                        if (tmp < 0) {tmp = 0;}
-                        if (M_ext_bs[y][z][x] > tmp) {M_ext_bs[y][z][x] = tmp;}
 
                         // Keep track of melt for LP, MP and HP TTG
 
@@ -360,12 +264,9 @@
                         else {M_ext_bs_MP_TTG[y][z][x] = 0;}
                         if   (HP_TTG && !LP_TTG && !MP_TTG) {M_ext_bs_HP_TTG[y][z][x] = M_ext_bs[y][z][x];}
                         else {M_ext_bs_HP_TTG[y][z][x] = 0;}
-                        M_ext_bs_LP_TTG[y][z][x] *= lp_gate;   /* window share caps */
-                        M_ext_bs_MP_TTG[y][z][x] *= mp_gate;
-                        M_ext_bs_HP_TTG[y][z][x] *= hp_gate;
                         M_ext_bs[y][z][x] = M_ext_bs_LP_TTG[y][z][x] + M_ext_bs_MP_TTG[y][z][x] + M_ext_bs_HP_TTG[y][z][x];
                         
-                        if ((D_eb[y][z][x] +  M_ext_bs[y][z][x]) < M4_bs){
+                        if ((cumulative_extracted_bs[y][z][x] +  M_ext_bs[y][z][x]) < M4_bs){
                              cumulative_extracted_bs[y][z][x] += M_ext_bs[y][z][x];
                              cumulative_extracted_LP[y][z][x] += M_ext_bs_LP_TTG[y][z][x];
                              cumulative_extracted_MP[y][z][x] += M_ext_bs_MP_TTG[y][z][x];
@@ -375,41 +276,27 @@
                               M_ext_bs_LP_TTG[y][z][x] = 0;
                               M_ext_bs_MP_TTG[y][z][x] = 0;
                               M_ext_bs_HP_TTG[y][z][x] = 0;}
-                        if (cumulative_extracted_bs[y][z][x] < 0) {cumulative_extracted_bs[y][z][x] = 0;} /* unclamped: global DI/window gates limit production */
-                        D_eb[y][z][x] += M_ext_bs[y][z][x];   /* source into the advected scalar */
-                        // Cap the per-type counters like the total: without this the
-                        // LP/MP/HP counters run past M4 when the advected D_eb drains
-                        // away from a persistent melting site (ce_MP reached 406%).
-                        if (cumulative_extracted_LP[y][z][x] < 0) {cumulative_extracted_LP[y][z][x] = 0;}
-                        if (cumulative_extracted_MP[y][z][x] < 0) {cumulative_extracted_MP[y][z][x] = 0;}
-                        if (cumulative_extracted_HP[y][z][x] < 0) {cumulative_extracted_HP[y][z][x] = 0;}
+                        cumulative_extracted_bs[y][z][x] = max(0.0, min(M4_bs, cumulative_extracted_bs[y][z][x]));
 
                         // Melt calculation Peridotite
                         if ((T[x] > T_solidus_pd) && (T[x] < T_liquidus_pd) && (T_liquidus_pd > T_solidus_pd)){
                              M0_pd  = ((T[x] - T_solidus_pd)/(T_liquidus_pd - T_solidus_pd));}
                         else if (T[x] > T_liquidus_pd) {M0_pd = 1.0;}
                         else {M0_pd = 0;}
-                        if ((M0_pd - D_ed[y][z][x]) > 0){M_pd[x] = M0_pd - D_ed[y][z][x];}
+                        if ((M0_pd - cumulative_extracted_pd[y][z][x]) > 0){M_pd[x] = M0_pd - cumulative_extracted_pd[y][z][x];}
                         else {M_pd[x] = 0;}
                         if ((M_pd[x] > M2_pd) && ((M_pd[x] - M1_pd) < M4_pd) && ((M_pd[x] - M1_pd) > 0)) {
                              M_ext_pd[y][z][x] = ( M_pd[x] - M1_pd) * (1 - L_den[x]) * mask_pd[y][z][x];}
                         else {M_ext_pd[y][z][x] = 0;}
                         if (M_ext_pd[y][z][x] < 0) {M_ext_pd[y][z][x] = 0;}
-                        // never extract past the remaining advected capacity
-                        tmp = M4_pd - D_ed[y][z][x];
-                        if (tmp < 0) {tmp = 0;}
-                        if (M_ext_pd[y][z][x] > tmp) {M_ext_pd[y][z][x] = tmp;}
-                        if ((D_ed[y][z][x] +  M_ext_pd[y][z][x]) < M4_pd) {
+                        if ((cumulative_extracted_pd[y][z][x] +  M_ext_pd[y][z][x]) < M4_pd) {
                                  cumulative_extracted_pd[y][z][x] += M_ext_pd[y][z][x];}
-                        else {M_ext_pd[y][z][x] = 0;}
-                        if (cumulative_extracted_pd[y][z][x] < 0) {cumulative_extracted_pd[y][z][x] = 0;}
-                        D_ed[y][z][x] += M_ext_pd[y][z][x];   /* source into the advected scalar */
-                        // Peridotite melt enriches the local basalt fraction. The
-                        // source is injected into the h POPULATIONS in the collision
-                        // (h[a] += w[a]*M_ext), NOT by incrementing the moment here:
-                        // a moment increment enters h_eq and the BGK relaxation then
-                        // amplifies it by 1/tau_h (~2x at tau_h ~ 0.5), which inflated
-                        // L by ~26 points in the first 5 My of the smF smoke.
+                        else {cumulative_extracted_pd[y][z][x] += 0;
+                              M_ext_pd[y][z][x] = 0;}
+                        cumulative_extracted_pd[y][z][x] = max(0.0, min(M4_pd, cumulative_extracted_pd[y][z][x]));
+                        // Adding Peridotite melt to original basalt
+                        L_ed[y][z][x]  += M_ext_pd[y][z][x];
+                        L_ed[y][z][x]   = max(0.0, min(1.0, L_ed[y][z][x]));
                         // Adding TTG to rho_r — insitu deposit branch
                         if (strcmp(melt_position,"insitu") == 0) {
                             rho_r[y][z][x] += M_ext_bs[y][z][x];
@@ -437,23 +324,15 @@
                         // BC amplifies it, but more slowly. Long-term, a proper
                         // half-way bounce-back BC fix would be needed in strmac.)
                         if (strcmp(melt_position,"surface") == 0 && boundary_u) {
-                            /* Deposit walks DOWN from zu+1 until it finds basalt to
-                               convert (crustal thickening) instead of silently
-                               dropping melt on a saturated surface. Keeps the red
-                               budget equal to the bookkept extraction. */
-                            FLOAT rem = M_ext_bs[y][z][x];
-                            int   zd_dep;
-                            for (zd_dep = zu + 1; zd_dep <= zu + 40 && rem > 0; zd_dep++) {
-                                FLOAT take = rem;
-                                if (take > rho_b[y][zd_dep][x]) take = rho_b[y][zd_dep][x];
-                                if (take < 0)                    take = 0;
-                                rho_b[y][zd_dep][x] -= take;
-                                rho_r[y][zd_dep][x] += take;
-                                for (int _aa = 0; _aa < na; _aa++) {
-                                    f_b[y][zd_dep][_aa][x] -= take * w[_aa];
-                                    f_r[y][zd_dep][_aa][x] += take * w[_aa];
-                                }
-                                rem -= take;
+                            int   zd_dep = zu + 1;
+                            FLOAT take   = M_ext_bs[y][z][x];
+                            if (take > rho_b[y][zd_dep][x]) take = rho_b[y][zd_dep][x];
+                            if (take < 0)                    take = 0;
+                            rho_b[y][zd_dep][x] -= take;
+                            rho_r[y][zd_dep][x] += take;
+                            for (int _aa = 0; _aa < na; _aa++) {
+                                f_b[y][zd_dep][_aa][x] -= take * w[_aa];
+                                f_r[y][zd_dep][_aa][x] += take * w[_aa];
                             }
                         }
                     }
@@ -482,10 +361,10 @@
                         // recompute here so Arrhenius works regardless of melt_extraction.
                         P        [x]      = P0[y][z][x] * rho[x];
                         P        [x]      = max(0.0, min(137.0, P[x]));
-                        double exponent   = (act_E[z] + P[x]*1e9 * act_V[z])/(gas_C * T_K[x])
+                        FLOAT exponent    = (act_E[z] + P[x]*1e9 * act_V[z])/(gas_C * T_K[x])
                                           - act_E[z]/(ref_K * gas_C);
                         exponent          = min(exponent, (FLOAT)40.0);           // prevent EXP overflow -> NaN
-                        arg      [x]      = exp(exponent);                        // dimensionless multiplier
+                        arg      [x]      = EXP(exponent);                        // dimensionless multiplier
                         nu_linear[x]      = (nu_f_r[z] * frac_r[x] + nu_f_b[z] * frac_b[x]) * arg[x];
                     }
                 }
@@ -536,10 +415,9 @@
                         f_r_neq[a][x]  = f_r[y][z][a][x] - feq_r[a][x];
                         f_b_neq[a][x]  = f_b[y][z][a][x] - feq_b[a][x];
                         g_neq  [a][x]  = g  [y][z][a][x] - (g_eq[a][x] + Delta_g[a]);
-                        if (A2_HEQ && strcmp(rheology,"archean2") == 0) {
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_LED_MACRO && strcmp(rheology,"archean2") == 0)) {
                             h_eq   [a][x]    = L_ed[y][z][x] * (w[a] + cu[a][x]);
                             h_neq  [a][x]    = h   [y][z][a][x] - h_eq[a][x];
-
                         }
                     }
                 }
@@ -599,12 +477,12 @@
 //                  Plastic rheology
                     if (strcmp(nu_formula,"Tau") == 0) {            // nu_plastic formula Tau_y/Tau
                         for(x=startx;x<endx;x+=incx) {
-                            nu_plastic[x] = (nu_f_r[z] * frac_r[x] + nu_f_b[z] * frac_b[x]) * pow((double)Tau_y[z]/(Tau[x]+1.e-5*(double)Tau_y[z]),(double)N[z]);
+                            nu_plastic[x] = (nu_f_r[z] * frac_r[x] + nu_f_b[z] * frac_b[x]) * POW(Tau_y[z]/(Tau[x]+1.e-5*Tau_y[z]),N[z]);
                         }
                     }
                     if (strcmp(nu_formula,"strain_rate") == 0) {    // nu_plastic formula Tau_y/(2*strain_rate)
                         for(x=startx;x<endx;x+=incx) {
-                            nu_plastic[x] = nu_star + pow((double)Tau_y[z]/((2 * strain_rate[x]) + (1.e-5*(double)Tau_y[z])),(double)N[z]);
+                            nu_plastic[x] = nu_star + POW(Tau_y[z]/((2 * strain_rate[x]) + (1.e-5*Tau_y[z])),N[z]);
                         }
                     }
 //                  Calculate total viscosity due to liner & plastic terms, and relaxation time
@@ -629,13 +507,8 @@
                         f_r[y][z][a][x] -= (f_r_neq[a][x]/tau_fi[x]);
                         f_b[y][z][a][x] -= (f_b_neq[a][x]/tau_fi[x]);
                         g  [y][z][a][x] -= (g_neq  [a][x]/tau_gi[z]);
-                        if (A2_HCOLL && strcmp(rheology,"archean2") == 0) {
+                        if (strcmp(rheology,"van-keken-miscible") == 0 || (A2_HCOLL && strcmp(rheology,"archean2") == 0)) {
                             h[y][z][a][x]   -= (h_neq[a][x]/tau_h[z]);
-                            /* depletion transport is handled by the TVD pass;
-                               melt sources enter D_ed/D_eb directly in the melt block */
-                            if (melt_extraction) {
-                                h[y][z][a][x] += w[a] * M_ext_pd[y][z][x];   /* exact L source */
-                            }
                         }
                     }
                 }
@@ -709,13 +582,7 @@
 //  in shifted form (subtract rho_init*w after writing back).
 //---------------------------------------------------------------
                    for(x=startx;x<endx;x+=incx) {
-                       // Recolor wherever any colour gradient exists. The old cutoff
-                       // (fm > 0.002) let colour that diffused beyond the interface
-                       // escape recapture: at low Mach / high nu_l the colour field
-                       // then diffuses at the momentum viscosity and red mass "grows"
-                       // out of blue regions. A ~zero threshold keeps the LKR
-                       // anti-diffusion active on every mixed cell.
-                       if(fm[x]>1.e-9) {
+                       if(fm[x]>0.002) {
                           for(a=0;a<na;a++) {
                               ff_sum          = (f_r[y][z][a][x] + f_b[y][z][a][x])/rho[x];
                               if (shifted_distribution)
@@ -733,66 +600,6 @@
                    }
                 }
 //---------------------------------------------------------------
-//              LKR recoloring for the advected depletion scalars:
-//              treat (D, 1-D) as an immiscible pair on a unit carrier
-//              and segregate along the depletion gradient with the
-//              same interface_thickness as the phases. This keeps
-//              depletion fronts sharp so material parcels do not lose
-//              their depletion value by numerical diffusion, while
-//              TAU_HD keeps the bulk diffusion near zero. Away from
-//              fronts (|grad D| ~ 0) the BGK result is kept.
-//---------------------------------------------------------------
-                if (RECOLOR_HD && collision && strcmp(rheology,"archean2") == 0 && melt_extraction) {
-                    for (int sfield = 0; sfield < 2; sfield++) {
-                        for(d=0;d<D;d++) {
-                            for(x=startx;x<endx;x+=incx) F[d][x] = 0;
-                            for (a=1;a<na;a++) {
-                                FLOAT bb, ww = 0.298, WW = 2 + 4*ww;
-                                if(a < 5) {bb = 1/WW;} else {bb = ww/WW;}
-                                yy_ya = y_ya[a][y];
-                                zz_za = z_za[a][z];
-                                for(x=startx;x<endx;x+=incx) {
-                                    xx_xa    = x_xa[a][x];
-                                    F[d][x] -= bb * c[a][d] * (sfield==0 ? D_ed[yy_ya][zz_za][xx_xa]
-                                                                         : D_eb[yy_ya][zz_za][xx_xa]);
-                                }
-                            }
-                        }
-                        if (D==2) {
-                            for(x=startx;x<endx;x+=incx) fm[x] = sqrt(F[0][x]*F[0][x] + F[1][x]*F[1][x]);
-                        } else {
-                            for(x=startx;x<endx;x+=incx) fm[x] = sqrt(F[0][x]*F[0][x] + F[1][x]*F[1][x] + F[2][x]*F[2][x]);
-                        }
-                        for(a=0;a<na;a++){
-                            for(x=startx;x<endx;x+=incx) {
-                                ttmp[x] = c[a][0]*F[0][x] + c[a][1]*F[1][x];
-                                if (D==3) ttmp[x] += c[a][2]*F[2][x];
-                                cos_lambda[a][x] = ttmp[x]/(fm[x] * cm[a] + zero);
-                            }
-                        }
-                        // Additive anti-diffusion only: the TAU_HD-relaxed populations
-                        // are KEPT (overwriting them with carrier equilibrium imposed a
-                        // tau=1 diffusivity and homogenized the field) and a small
-                        // counter-gradient segregation flux is added. BETA_HD is sized
-                        // to balance the TAU_HD diffusivity (0.007), not the phase
-                        // recolorer's 1/6; the phase value 0.75 over-sharpens ~25x and
-                        // produces lattice-scale herringbone oscillations.
-                        for(x=startx;x<endx;x+=incx) {
-                            if (fm[x] > 1.e-9) {
-                                FLOAT Dm   = (sfield==0) ? D_ed[y][z][x]     : D_eb[y][z][x];
-                                FLOAT Dsrc = (sfield==0) ? M_ext_pd[y][z][x] : M_ext_bs[y][z][x];
-                                FLOAT Dtot = Dm + Dsrc;
-                                if (Dtot < 0) Dtot = 0;
-                                for(a=0;a<na;a++) {
-                                    FLOAT segr = BETA_HD * Dtot * (1 - Dtot) * cos_lambda[a][x] * w[a];
-                                    if (sfield==0) hd[y][z][a][x] += segr;
-                                    else           hb[y][z][a][x] += segr;
-                                }
-                            }
-                        }
-                    }
-                }
-//---------------------------------------------------------------
 //              Add Boussinesq bouyancy force (assumes that d = D-1 is the z-axis)
 //---------------------------------------------------------------
                 for(x=startx;x<endx;x+=incx) {
@@ -801,14 +608,10 @@
                     g_b[x]  = frac_b[x] * gi[x];
                     if (A2_BUOY && strcmp(rheology,"archean2") == 0 && melt_extraction ) {
                         P_garnet_in[x]    = 0.014 * T[x]  - 5.4;
-                        P_plag_out [x]    = 0.024 * T[x]  + 4;
-                        // Transition lines are in kbar: compare P*10 (P is GPa).
-                        // Above plagioclase-out the basalt is full eclogite and the
-                        // coefficient SATURATES at 0.16 (Jain et al. 2019; deep basalt
-                        // stays denser than olivine to the lowermost mantle).
-                        if      (P[x]*10 <  P_garnet_in[x]) {coef_phase_bs[x] = 0.0;}
-                        else if (P[x]*10 <= P_plag_out[x])  {coef_phase_bs[x] = 0.16 * (P[x]*10 - P_garnet_in[x]) /(P_plag_out[x] - P_garnet_in[x]);}
-                        else                                {coef_phase_bs[x] = 0.16;}
+                        P_plag_out [x]    = 0.020 * T[x]  + 4;
+                        if (((P[x]) >= P_garnet_in[x]) && ((P[x]) <= P_plag_out[x])) {
+                              coef_phase_bs[x]  = 0.16 * (P[x] - P_garnet_in[x]) /(P_plag_out[x] - P_garnet_in[x]);}
+                        else {coef_phase_bs[x]  = 0.0;}
                         if (M_ext_bs[y][z][x] > 0) {coef_res_bs[x]   =  0.4  * M_ext_bs[y][z][x];}
                         else {coef_res_bs[x] = 0;}
                         if (M_ext_pd[y][z][x] > 0) {coef_res_pd[x]   = -0.04 * M_ext_pd[y][z][x];}
