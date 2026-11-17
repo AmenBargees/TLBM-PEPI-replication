@@ -10,3 +10,4 @@ projects/*/*/data/
 projects/*/*/plots/
 projects/*/*/movies/
 *.bak*
+.DS_Store
