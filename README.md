@@ -1,5 +1,7 @@
 # A multiphase Thermal Lattice Boltzmann Method for modelling planetary dynamics
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24333821.svg)](https://doi.org/10.5281/zenodo.24333821)
+
 Replication packages for the PEPI paper (Bargees et al.).
 
 - package_1/ : TLBM V2.6 code and the five inputs replicating the paper's
