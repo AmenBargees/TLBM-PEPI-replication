@@ -1,0 +1,176 @@
+#===============================================================================
+# Solid state mantle convection in an annulus at Pr = 1000
+# 
+# Peter Mora
+#-------------------------------------------------------------------------------
+# Time specifications: n_timescale
+#
+# n is an integer and timescale can be:
+#
+#     Secs, Mins , Hours, Days, Weeks, Months, Years, dY, hY, Ky, dKy, hKy, My, dMy, hMy, Gy, dGy, hGy, Ty
+#===============================================================================
+# Run title and description on plots
+#-------------------------------------------------------------------------------
+
+run_title   = Ra=10^4                                           # Title for the run on plots
+description = Ra=10^4,_Pr=1000,_no-slip_BC_(Author:_Peter_Mora) # Description of the run on plots
+description_color    = black                    # Color of the description
+description_box      = False                    # Plot the description in a white box (True or False)
+description_location = frame                    # Description location (image or frame)
+description_alignment = "center"                # Description alignment (left, center or right)
+
+#-------------------------------------------------------------------------------
+# Model size, timesteps and geometry
+#-------------------------------------------------------------------------------
+
+nt                   = 200_Gy       # Simulation time
+R_p                  = Earth        # Radius of the planet in metres or one of: Mercury, Venus, Earth, Moon, Mars, Uranus, Neptune
+L_p                  = mantle       # Layer thickness in metres or one of: mantle, upper_mantle
+nx                   = 201          # X resolution of model
+ny                   = 1            # Y resolution of model
+nz                   = unspecified  # Z resolution of model
+geometry             = annulus      # Geometry: cartesian, annulus or spherical
+theta1               = 45           # Start theta of annulus (degrees)
+theta2               = 135          # End   theta of annulus (degrees)
+
+#-------------------------------------------------------------------------------
+# Physical specifications
+#-------------------------------------------------------------------------------
+
+state                = solid       # State: solid or magma
+Ra                   = 1.e4        # Rayleigh number. Note: state = solid => Ra_p = physical Rayleigh number = Ra_l = Ra = lattice Rayleigh number.
+Pr                   = 1.e3        # Prandtl number.  Note: state = solid requires modelling at Pr >~ 1000 with Pr = 1000 recommended based on benchmarks.
+rho_p                = 4500        # Density                         (kg/m^3)
+eta_p                = 2.8e22      # Dynamic viscosity               (Pa.s = kg/(m.s))
+ka_p                 = 1.e-6       # Thermal diffusivity             (m^2/s)
+g_p                  = 9.8         # Gravity                         (m/s^2)
+beta_p               = 3e-5        # Thermal expansion coefficient   (1/K)
+T0_p                 = 0           # Surface temperature             (C)
+dT_p                 = 3400        # Temperature difference          (K)
+rheology             = linear      # Rheology: linear, yield_stress, ...
+Tdep_viscosity       = none        # Temperature dependence of viscosity
+dT_p_random          = 0           # Random temperature fluctuations (K) on thermal BC to initiate convection
+ncells_x             = 2           # Number    of         sinusoidal temperature fluctuation cells in x where ncells_x = 0 => no sinusoidal fluctuations in x
+ncells_y             = 0           # Number    of         sinusoidal temperature fluctuation cells in y where ncells_y = 0 => no sinusoidal fluctuations in y
+cell_amplitude_body  = 4000        # Amplitude of         sinusoidal temperature fluctuation cells in the model body
+cell_amplitude_boundaries = 0      # Amplitude of         sinusoidal temperature fluctuation cells on the upper & lower boundaries
+cell_power           = 2           # Amplitude of         sinusoidal temperature fluctuation cells are modified by abs(fluctuations)^cell_power
+amp_sinusoid         = 0           # Amplitude of         sinusoidal temperature fluctuations everywhere in the model for all x, y and z
+x_periods            = 0           # Number of periods of sinusoidal temperature fluctuations everywhere in the model for all x, y and z
+y_periods            = 0           # Number of periods of sinusoidal temperature fluctuations everywhere in the model for all x, y and z
+z_periods            = 0           # Number of periods of sinusoidal temperature fluctuations everywhere in the model for all x, y and z
+
+#-------------------------------------------------------------------------------
+# Boundary conditions,  no_slip, free_slip or periodic (side boundaries only)
+#-------------------------------------------------------------------------------
+
+BC_sides             = free_slip   # Side  BC
+BC_upper             = no_slip     # Upper BC
+BC_lower             = no_slip     # Lower BC
+
+#-------------------------------------------------------------------------------
+# Specification of the physical timestep dt_p
+#-------------------------------------------------------------------------------
+
+dt_p                 = 20_Ky        # Physical timestep (takes precedence over specification of dt_p through nu_l or g_l)
+nu_l                 = unspecified  # Lattice viscosity (calculate dt_p from nu_l, takes precedence over specification of dt_p through g_l)
+g_l                  = unspecified  # Lattice gravity   (calculate dt_p from  g_l)
+
+#-------------------------------------------------------------------------------
+# Accuracy specifications
+#-------------------------------------------------------------------------------
+
+float_bits           = 32          # Precision in bits of calculations
+edge_bits            = 32          # Precision in bits of edges of domains
+data_bits            = 16          # Precision in bits of data files (.npy) of plots (.png)
+shifted_distribution = True        # Increases LBM accuracy
+optimize_nu          = False       # Optimize nu_l: True, False or float value to set nu_l to
+
+#-------------------------------------------------------------------------------
+# Output specifications
+#-------------------------------------------------------------------------------
+
+output_units         = physical    # Output units: physical or lattice
+output_plots         = True        # Output plot      files
+output_data          = True        # Output data      files
+output_bmk           = True        # Output benchmark files
+
+#-------------------------------------------------------------------------------
+# Output increment specifications
+#-------------------------------------------------------------------------------
+
+Inc_performance      = 15_Gy       # Performance increment
+Inc_plots            = 3_Gy        # Plot        increment
+Inc_data             = 3_Gy        # Data        increment
+Inc_mach             = 600_My      # Data        increment
+Inc_bmk              = 150_My      # Benchmark   increment
+
+#-------------------------------------------------------------------------------
+# Output plot specifications
+#-------------------------------------------------------------------------------
+
+plane                = xz          # Plane to plot (xz, xy or yz)
+coordinates          = 0           # Coordinates (ie. if plane=xz, these are the y-coordinates of the plane plotted)
+
+plot_size            = medium      # Plot size: vsmall, small, medium, large, vlarge
+plot_size_factor     = 1.2         # Plot size modifying factor to apply to plot_size
+plot_colorbar        = True        # Plot the colorbar
+colormap             = bwr         # Colormap for plots: eg, jet, bwr, seismic, ...
+latex                = False       # Use latex for titles and labels in plots
+
+plot_rho             = False       # Plot the density     (kg/m^3)
+plot_T               = True        # Plot the temperature (degrees C)
+fix_scale_T          = True        # Temperature scale fixed to rangel from T_lower to T_upper (True) or from min to max T values in the field
+plot_u               = True        # Plot the magnitude of velocity  |u|
+plot_vectors         = False       # Plot velocity vectors (black and white)
+plot_nu_total        = False       # Plot nu_total     (only for code = python)
+plot_Tau             = False       # Plot shear stress (only for code = python)
+
+#-------------------------------------------------------------------------------
+# Output plot scale specifications
+#
+# Plots show scaled fields based on the max and min values in the field,
+# and two specifications, clip (linear scaling) and gpow (nonlinear scaling).
+#
+# clip: clips a field above clip times the maximum value in the field
+# EXAMPLE: clip = 0.5 clips at half the maximum so values less than half
+# of the maximum will have the full color range and values above half
+# the maximum show as saturated colors.
+
+# gpow: a nonlinear scaling of field f by a factor of (|f|/max(f))^gpow.
+# EXAMPLE: gpow = 0.5 boosts small values by the square root of magnitude
+# of the field allowing more detail to be seen of the smaller values
+#-------------------------------------------------------------------------------
+
+vector_overlay       = True        # Velocity vector overlay on the velocity magnitude plot
+vector_color         = k           # Velocity vector color of the vector overlay on the velocity magnitude plot
+vector_length        = 1.0         # Length of vectors relative to the default
+vector_width         = 1.0         # Width  of vectors relative to the default
+vector_interval      = default     # Interval in lattice units to plot vectors
+annulus_interval     = default     # Interval in lattice units to plot the annular lattice
+
+clip_rho             = 1.0         # clip for density
+gpow_rho             = 1.0         # gpow for density
+clip_T               = 1.0         # clip for temperature
+gpow_T               = 1.0         # gpow for temperature
+clip_u               = 1.0         # clip for the magnitude of velocity
+gpow_u               = 1.0         # gpow for the magnitude of velocity
+clip_nu_total        = 1.0         # clip for nu_total
+gpow_nu_total        = 1.0         # gpow for nu_total
+clip_Tau             = 1.0         # clip for Tau
+gpow_Tau             = 1.0         # gpow for Tau
+
+#-------------------------------------------------------------------------------
+# Performance specifications
+#-------------------------------------------------------------------------------
+
+code                 = c           # Do calculations using c or python
+overlap              = False       # Overlap getting of domain edges with calculations. This only
+                                   # has potential benefit for large cluster runs with code = c
+domain_decomposition = 3D          # 1D, 2D or 3D. 3D will optimize the domain decomposition (DD)
+nxi_min              = 51          # Minimum x domain scan in DD (min cache blocking size)
+nxi_max              = 201         # Maximum x domain scan in DD (max cache blocking size)
+nyi_min              = unspecified # Minimum y domain scan in DD (useful to specify for huge 3D runs as faster)
+nyi_max              = unspecified # Maximum y domain scan in DD (useful to specify for huge 3D runs as faster)
+nzi_min              = unspecified # Minimum z domain scan in DD (useful to specify for huge 3D runs as faster)
+nzi_max              = unspecified # Maximum z domain scan in DD (useful to specify for huge 3D runs as faster)

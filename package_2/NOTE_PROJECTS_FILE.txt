@@ -1,0 +1,11 @@
+Peter's original tar contains a top-level control file named PROJECTS next to
+the projects/ directory. Those two names collide on case-insensitive
+filesystems (macOS), so the PROJECTS file is not included here.
+
+On Linux, after cloning, recreate it with:
+
+    cp PROJECTS_benchmarks PROJECTS
+    cp RUNS_benchmarks RUNS
+
+(RUNS is included and already set, but copying both keeps the benchmark
+selection explicit, per README_benchmarks.txt.)
